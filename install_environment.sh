@@ -12,7 +12,7 @@ CONDA_ENV="${TELEOP_CONDA_ENV:-gello-upper-body-teleop}"
 
 usage() {
   cat <<'EOF'
-用法：./一键安装环境.sh [选项]
+用法：./install_environment.sh [选项]
 
 直接在复制到新电脑的 gello_upper_body_teleop 目录中执行本脚本。
 
