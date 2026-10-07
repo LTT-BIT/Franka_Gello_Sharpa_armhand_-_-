@@ -1,0 +1,48 @@
+{
+  "left": {
+    "raw_frames": 2014,
+    "solved_frames": 599,
+    "solved_exact_source_raw_matches": 599,
+    "raw_quaternion_norm_min": 0.9999999192066633,
+    "raw_quaternion_norm_max": 1.000000140577598,
+    "raw_status_counts": {
+      "left:valid": 22154,
+      "right:valid": 22154
+    },
+    "bridge_summary": {
+      "type": "summary",
+      "published": {
+        "left": 599,
+        "right": 599
+      },
+      "rejected": 0,
+      "malformed_worker_lines": 0,
+      "worker_exit_code": 0,
+      "hardware_send_count": 0,
+      "fake_driver_confirmed": true
+    }
+  },
+  "right": {
+    "raw_frames": 2029,
+    "solved_frames": 599,
+    "solved_exact_source_raw_matches": 599,
+    "raw_quaternion_norm_min": 0.9999999197285612,
+    "raw_quaternion_norm_max": 1.0000001407585795,
+    "raw_status_counts": {
+      "left:valid": 22319,
+      "right:valid": 22319
+    },
+    "bridge_summary": {
+      "type": "summary",
+      "published": {
+        "left": 599,
+        "right": 599
+      },
+      "rejected": 0,
+      "malformed_worker_lines": 0,
+      "worker_exit_code": 0,
+      "hardware_send_count": 0,
+      "fake_driver_confirmed": true
+    }
+  }
+}

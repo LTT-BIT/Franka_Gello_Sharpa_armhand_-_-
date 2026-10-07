@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-06",
+  "physical_hardware_started": false,
+  "physical_sdk_send_count": 0,
+  "tests": [
+    {
+      "name": "host",
+      "command": "PYTHONPATH=\"$PWD:$PWD/adapters/pico/src:$PWD/adapters/manus/python:$PWD/ros_ws/src/teleop_core\" /home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot adapters/pico/tests/test_manus_pipeline.py test_operator_hand_poses.py -q --tb=short",
+      "passed": 58,
+      "skipped": 24,
+      "failed": 0
+    },
+    {
+      "name": "ros",
+      "command": "source portable_deps/litchi_hardware/ros2/install/setup.bash\nexport ROS_DOMAIN_ID=199 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp PYTHONPATH=\"$PWD:$PWD/adapters/pico/src:$PWD/ros_ws/src/teleop_core:${PYTHONPATH:-}\"\nportable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot --ignore=adapters/litchibot/test_cli.py portable_deps/litchi_hardware/ros2/src/manus_sharpa_teleop/manus_sharpa_teleop/test portable_deps/litchi_hardware/ros2/src/sharpa_hand/sharpa_driver/test -q --tb=short",
+      "passed": 92,
+      "skipped": 0,
+      "failed": 0
+    },
+    {
+      "name": "gui",
+      "command": "PYTHONPATH=\"$PWD:$PWD/adapters/pico/src\" /tmp/gello-full-gui-tests/bin/python -m pytest apps/operator_gui -q --tb=short",
+      "passed": 12,
+      "skipped": 0,
+      "failed": 0
+    },
+    {
+      "name": "recorder",
+      "command": "PYTHONPATH=\"$PWD:$PWD/ros_ws/src/teleop_core:$PWD/ros_ws/src/teleop_data_collector\" /home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest ros_ws/src/teleop_data_collector/test/test_recording_contract.py -q --tb=short",
+      "passed": 25,
+      "skipped": 0,
+      "failed": 0
+    }
+  ],
+  "notes": [
+    "Groups overlap; counts are not a unique-test total.",
+    "Host skips ROS-only tests; ROS group runs them in domain 199.",
+    "GUI tests use isolated /tmp/gello-full-gui-tests virtualenv with existing base PySide6.",
+    "Physical SDK loader spies, fake Sharpa, synthetic source, stub arm/hands wrappers only.",
+    "Production Docker/FR3/glove/hardware stack not launched; real acceptance pending."
+  ]
+}

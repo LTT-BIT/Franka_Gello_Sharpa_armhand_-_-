@@ -1,0 +1,93 @@
+{
+  "path": "/home/user/litchibot_glove/validation/logs/litchibot_sharpa_dry_run_30s.jsonl",
+  "sent": 0,
+  "summary": {
+    "type": "summary",
+    "dry_run": true,
+    "sides": {
+      "left": {
+        "count": 899,
+        "max_delta_rad": 1.5708,
+        "statuses": {
+          "partial": 899
+        },
+        "invalid_glove_joints": {
+          "thumb_mcp_flex": 899,
+          "thumb_pip_flex": 899
+        },
+        "mean_dt_s": 0.03332449801113586,
+        "p50_dt_s": 0.03328213,
+        "p95_dt_s": 0.0381631922,
+        "max_dt_s": 0.044897965,
+        "target_hz": 30.00795389823534
+      },
+      "right": {
+        "count": 899,
+        "max_delta_rad": 0.01052088783410643,
+        "statuses": {
+          "solved": 899
+        },
+        "invalid_glove_joints": {},
+        "mean_dt_s": 0.03332449801113586,
+        "p50_dt_s": 0.03328213,
+        "p95_dt_s": 0.0381631922,
+        "max_dt_s": 0.044897965,
+        "target_hz": 30.00795389823534
+      }
+    },
+    "errors": 2,
+    "last_error": "Malformed UWB packet: Invalid/duplicate sensor ID",
+    "sent": 0
+  },
+  "sides": {
+    "left": {
+      "count": 899,
+      "shape": [
+        22
+      ],
+      "joint_order_verified": true,
+      "limits_verified": true,
+      "invalid_glove_joints": {
+        "thumb_mcp_flex": 899,
+        "thumb_pip_flex": 899
+      },
+      "frequency_hz": 30.00795389823534,
+      "mean_dt_ms": 33.32449801113586,
+      "p50_dt_ms": 33.28213,
+      "p95_dt_ms": 38.163192200000005,
+      "max_dt_ms": 44.897965,
+      "max_delta_rad": 1.5708,
+      "jumps_above_0_2_rad": [
+        {
+          "sequence": 397,
+          "joint": "pinky_MCP_FE",
+          "delta_rad": -1.5708,
+          "from_rad": 1.5708,
+          "to_rad": 0.0
+        }
+      ],
+      "statuses": {
+        "partial": 899
+      }
+    },
+    "right": {
+      "count": 899,
+      "shape": [
+        22
+      ],
+      "joint_order_verified": true,
+      "limits_verified": true,
+      "invalid_glove_joints": {},
+      "frequency_hz": 30.00795389823534,
+      "mean_dt_ms": 33.32449801113586,
+      "p50_dt_ms": 33.28213,
+      "p95_dt_ms": 38.163192200000005,
+      "max_dt_ms": 44.897965,
+      "max_delta_rad": 0.01052088783410643,
+      "jumps_above_0_2_rad": [],
+      "statuses": {
+        "solved": 899
+      }
+    }
+  }
+}

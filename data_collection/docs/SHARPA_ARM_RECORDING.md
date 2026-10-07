@@ -21,21 +21,21 @@ libfranka/FCI 连接。
 终端 1：保持原来的双臂启动流程。
 
 ```bash
-cd /home/descfly/ZH/gello_upper_body_teleop
+cd /home/user/gello_upper_body_teleop
 ./ops/run/run_gello_arms_only.sh
 ```
 
 终端 2：用隔离后的 CycloneDDS 包装器启动原有 MANUS/Sharpa 程序。
 
 ```bash
-cd /home/descfly/ZH/gello_upper_body_teleop
+cd /home/user/gello_upper_body_teleop
 ./ops/run/run_sharpa_hands_cyclonedds.sh
 ```
 
 终端 3：确认双臂、双手都正常跟随之后启动常驻采集器。
 
 ```bash
-cd /home/descfly/ZH/gello_upper_body_teleop
+cd /home/user/gello_upper_body_teleop
 ./ops/run/start_sharpa_arm_recording.sh --with-cameras
 ```
 
@@ -50,7 +50,7 @@ OrbbecViewer 必须先关闭。如只需要复验臂和手、不访问相机，�
 五指的 F6 wrench 和 deformation，共 20 个触觉 topic，用下面的新命令替代终端 3：
 
 ```bash
-cd /home/descfly/ZH/gello_upper_body_teleop
+cd /home/user/gello_upper_body_teleop
 ./ops/run/start_sharpa_arm_recording_with_tactile.sh --with-cameras
 ```
 
@@ -58,13 +58,13 @@ cd /home/descfly/ZH/gello_upper_body_teleop
 和采集踏板开始/停止 episode，并保留原有的 rosbag 收尾、完整性校验和质量评价流程。
 它单独输出到：
 ```text
-/home/descfly/franka_teleop_data/bags/gello_sharpa_tactile/episodeN/
+$TELEOP_DATA_ROOT/bags/gello_sharpa_tactile/episodeN/
 ```
-新增```/home/descfly/ZH/gello_upper_body_teleop/data_collection/config/rosbag_qos_sharpa_tactile.yaml```，覆盖全部 36 个录制 topic：
+新增```/home/user/gello_upper_body_teleop/data_collection/config/rosbag_qos_sharpa_tactile.yaml```，覆盖全部 36 个录制 topic：
 - 相机、FR3、Sharpa command：reliable
 - Sharpa joint state、20 路 tactile：best_effort
 
-[/home/descfly/ZH/gello_upper_body_teleop/data_collection/config/record_gello_sharpa_tactile.yaml(line 29)] 现在只显式传入这一份 QoS 文件，不再生成全局 best_effort 临时文件。
+[/home/user/gello_upper_body_teleop/data_collection/config/record_gello_sharpa_tactile.yaml(line 29)] 现在只显式传入这一份 QoS 文件，不再生成全局 best_effort 临时文件。
 
 触觉版要求终端 2 已发布左右手各五指的 `wrench` 与 `deformation`，不支持
 `--without-hands`。它不录 tactile raw 图或 `CONTACT_POINT`。每路 topic 的类型、
@@ -79,7 +79,7 @@ deformation 都是 `sensor_msgs/msg/Image`。原录制配置没有改变。
 手套或 Sharpa 不在场时，不启动终端 2，并在终端 3 显式跳过手部 topic：
 
 ```bash
-cd /home/descfly/ZH/gello_upper_body_teleop
+cd /home/user/gello_upper_body_teleop
 ./ops/run/start_sharpa_arm_recording.sh --without-hands --with-cameras
 ```
 
@@ -126,7 +126,7 @@ Hold 只会暂停机械臂跟随遥操输入；控制链仍持续发布机械臂
 默认输出到：
 
 ```text
-/home/descfly/franka_teleop_data/bags/gello_sharpa/episodeN/
+$TELEOP_DATA_ROOT/bags/gello_sharpa/episodeN/
 ```
 
 录制器先核对下列 8 个臂/手 topic：

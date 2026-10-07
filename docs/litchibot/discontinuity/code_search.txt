@@ -1,0 +1,60 @@
+config/litchibot/wave.json:9:  "clamp_inputs": true,
+config/litchibot/wave.json:35:  "initial_values": [
+config/litchibot/wave.json:60:    "default": {
+config/litchibot/wave.json:110:            69.90085100596043
+config/litchibot/wave.json:127:            1.5708
+config/litchibot/wave.json:179:            1.5708
+config/litchibot/wave.json:231:            1.5708
+config/litchibot/wave.json:296:            1.5708
+config/litchibot/wave.json:390:            69.90085100596043
+config/litchibot/wave.json:407:            1.5708
+config/litchibot/wave.json:459:            1.5708
+config/litchibot/wave.json:511:            1.5708
+config/litchibot/wave.json:576:            1.5708
+config/litchibot/sharpa_schema.json:50:      1.5708
+config/litchibot/sharpa_schema.json:66:      1.5708
+config/litchibot/sharpa_schema.json:82:      1.5708
+config/litchibot/sharpa_schema.json:102:      1.5708
+adapters/litchibot/backend.py:1:"""Headless LitchiBot lifecycle compatible with HandWorker; dry-run by default."""
+adapters/litchibot/backend.py:28:    sides: dict = field(default_factory=lambda: {s: SideStatus() for s in ("left", "right")})
+adapters/litchibot/backend.py:82:                              "statuses": Counter(), "invalid_glove_joints": Counter()}
+adapters/litchibot/backend.py:175:                stats["invalid_glove_joints"].update(row["invalid_glove_joints"])
+adapters/litchibot/vendor/visual_angle.py:21:def clamp(value: float, lower: float, upper: float) -> float:
+adapters/litchibot/vendor/visual_angle.py:27:def _as_float_pair(value: object, default: tuple[float, float]) -> tuple[float, float]:
+adapters/litchibot/vendor/visual_angle.py:30:    return default
+adapters/litchibot/vendor/visual_angle.py:52:    Config-driven retargeter from clamped human visual joint angles to robot outputs.
+adapters/litchibot/vendor/visual_angle.py:64:        initial_values: list[Number] | None = None,
+adapters/litchibot/vendor/visual_angle.py:73:        self.initial_values = list(initial_values or self.config.get("initial_values", []))
+adapters/litchibot/vendor/visual_angle.py:74:        if self.joint_names and len(self.initial_values) != len(self.joint_names):
+adapters/litchibot/vendor/visual_angle.py:75:            raise ValueError("initial_values length must match joint_names length.")
+adapters/litchibot/vendor/visual_angle.py:76:        self.current_values = list(self.initial_values)
+adapters/litchibot/vendor/visual_angle.py:118:        self.current_values = list(self.initial_values)
+adapters/litchibot/vendor/visual_angle.py:125:            side_payload = sides.get(self.side) or sides.get("default") or {}
+adapters/litchibot/vendor/visual_angle.py:142:        input_range = _as_float_pair(mapping.get("input_range_deg"), (0.0, 90.0))
+adapters/litchibot/vendor/visual_angle.py:155:        source_deg += float(mapping.get("offset_deg", 0.0))
+adapters/litchibot/vendor/visual_angle.py:170:        if bool(self.config.get("clamp_inputs", True)):
+adapters/litchibot/vendor/visual_angle.py:171:            normalized = clamp(normalized, 0.0, 1.0)
+adapters/litchibot/vendor/visual_angle.py:180:            return int(round(clamp(value, 0.0, 255.0)))
+adapters/litchibot/vendor/dexterous_cmc.py:73:        if not 1 < self.stabilization["damping_start_deg"] < 90 or self.stabilization["damping_strength_deg"] >= 90:
+adapters/litchibot/vendor/dexterous_cmc.py:74:            raise ValueError("CMC damping angles must be below 90 degrees; start must exceed 1 degree")
+adapters/litchibot/vendor/dexterous_cmc.py:126:        hold = math.sin(math.radians(1.))
+adapters/litchibot/vendor/dexterous_cmc.py:127:        u = float(np.clip((start-radius)/(start-hold), 0., 1.))
+adapters/litchibot/vendor/dexterous_cmc.py:147:        if radius < hold:
+adapters/litchibot/vendor/dexterous_cmc.py:212:            "direction_error_deg": math.degrees(math.acos(float(np.clip(fitted[:, 1] @ target[:, 1], -1., 1.)))),
+adapters/litchibot/vendor/dexterous_cmc.py:213:            "orientation_residual_deg": math.degrees(math.acos(float(np.clip((np.trace(fitted.T @ target)-1)/2, -1., 1.)))),
+adapters/litchibot/retarget.py:56:        fallback = []
+adapters/litchibot/retarget.py:66:                # Vendor mapping defaults absent scalars to zero. Override only
+adapters/litchibot/retarget.py:67:                # unavailable dependencies; never interpret an invalid scalar as a measurement.
+adapters/litchibot/retarget.py:69:                (held if self.ever_valid[index] else fallback).append(name)
+adapters/litchibot/retarget.py:72:        clipped = np.clip(values, JOINT_LIMITS[:, 0], JOINT_LIMITS[:, 1])
+adapters/litchibot/retarget.py:73:        self.mapper.current_values = clipped.tolist()
+adapters/litchibot/retarget.py:75:            "side": self.side, "joint_names": list(JOINT_NAMES), "positions_rad": clipped.tolist(),
+adapters/litchibot/retarget.py:77:            "initial_fallback_joints": fallback,
+adapters/litchibot/retarget.py:78:            "invalid_glove_joints": [n for n in joint_names if not valid[n]],
+adapters/litchibot/retarget.py:81:            "clipped_joints": [n for n, a, b in zip(JOINT_NAMES, values, clipped) if a != b],
+adapters/litchibot/retarget.py:89:                start, end = rule.get('input_range_deg', (0.0,90.0))
+adapters/litchibot/retarget.py:95:                    'normalized_before_vendor_clamp': normalized,
+adapters/litchibot/retarget.py:96:                    'vendor_input_saturation': bool(self.mapper.config.get('clamp_inputs',True))
+adapters/litchibot/retarget.py:99:            result['diagnostic_stages'] = {'vendor_output_before_hold_rad': vendor_values.tolist(),
+adapters/litchibot/retarget.py:100:                'previous_target_rad': previous.tolist(), 'after_hold_before_schema_clip_rad': values.tolist(),
+adapters/litchibot/retarget.py:101:                'final_target_rad': clipped.tolist(), 'mapping_rules': rules}

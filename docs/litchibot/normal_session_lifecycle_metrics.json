@@ -1,0 +1,55 @@
+{
+  "duration_s": 10.000037158999476,
+  "source_hz": {
+    "left": 29.99988852341581,
+    "right": 29.99988852341581
+  },
+  "forwarding_hz": {
+    "left": 29.99988852341581,
+    "right": 29.99988852341581
+  },
+  "command_interval": {
+    "left": {
+      "mean_ms": 33.33303120066725,
+      "p95_ms": 33.416679102083435,
+      "max_ms": 33.58202800154686,
+      "samples": 299
+    },
+    "right": {
+      "mean_ms": 33.332998732448594,
+      "p95_ms": 33.48965320001298,
+      "max_ms": 33.73903299871017,
+      "samples": 299
+    }
+  },
+  "callback_processing": {
+    "mean_ms": 0.15349558801416338,
+    "p95_ms": 0.22417745094571725,
+    "max_ms": 0.33594300111872144,
+    "samples": 602
+  },
+  "heartbeat_rtt": {
+    "mean_ms": 9.926624227593852,
+    "p95_ms": 10.058203101652907,
+    "max_ms": 10.137937999388669,
+    "samples": 167
+  },
+  "target_packet_age": {
+    "mean_ms": 0.288198458474049,
+    "p95_ms": 0.5153354981302982,
+    "max_ms": 0.7785160014464054,
+    "samples": 602
+  },
+  "native_command_timeouts": 0,
+  "supervisor_disconnects": 0,
+  "diagnostic_queue_depth": 3,
+  "sdk_feedback_reads_by_normal_adapter": 0,
+  "physical_sdk_loads": 0,
+  "slow_diagnostics": {
+    "logger_ms": 150,
+    "statistics_write_ms": 300,
+    "status_disk_ms": 250
+  },
+  "sdk": "original mock sender; physical SDK prohibited",
+  "ROS_DOMAIN_ID": "199"
+}

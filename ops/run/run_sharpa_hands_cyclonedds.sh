@@ -1,23 +1,62 @@
 #!/usr/bin/env bash
-# NEW / EXPERIMENTAL (Route A DDS unification) -- safe to delete to revert.
-#
-# Launches the standalone litchi_hardware MANUS->Sharpa hand teleop, but forces
-# it onto the SAME DDS world the FR3 arms and the data recorder use:
-#   CycloneDDS + ROS_LOCALHOST_ONLY=1 + ROS_DOMAIN_ID=<arms domain>.
-#
-# The stock command
-#   pixi run -e ros2 teleop manus_calibration_directory:=$PWD/calibration/metaglove
-# runs on FastRTPS / domain 0 / multicast, which is a DIFFERENT DDS world than
-# the arms (CycloneDDS/localhost-only). That split is why hands and arms are two
-# separate programs today, and it is also what prevents one recorder from seeing
-# both. This wrapper only overrides the transport env vars, then defers to the
-# unchanged litchi `teleop` task, passing through all arguments verbatim.
-#
-# It modifies NO existing file. Delete this script to return to the stock path.
+# Production Terminal 2: one shared Sharpa driver in the arms/recorder DDS domain.
+# Default Manus argv, calibration and transport remain unchanged.
+# LitchiBot selects a separate Python 3.10 worker and ROS command bridge.
+# Dry-run forces fake; real acceptance requires a separate supervised permit/guard.
 set -euo pipefail
+
+# Preserve the original Manus argv when no new options are supplied.
+HAND_SOURCE=manus
+DRY_RUN=false
+VALIDATION=false
+VALIDATION_PERMIT=""
+FULL_CONFIG=""
+source_selected=false
+dry_selected=false
+extra_args=()
+while (($#)); do
+  case "$1" in
+    --hand-source)
+      [[ $# -ge 2 ]] || { echo "Missing --hand-source value" >&2; exit 2; }
+      HAND_SOURCE="$2"; source_selected=true; shift 2 ;;
+    --hand-source=*) HAND_SOURCE="${1#*=}"; source_selected=true; shift ;;
+    --full-config)
+      [[ $# -ge 2 ]] || { echo "Missing full config" >&2; exit 2; }
+      FULL_CONFIG="$2"; shift 2 ;;
+    full_config:=*) FULL_CONFIG="${1#full_config:=}"; shift ;;
+    --dry-run) DRY_RUN=true; dry_selected=true; shift ;;
+    --supervised-hardware-validation) VALIDATION=true; shift ;;
+    --validation-permit)
+      [[ $# -ge 2 ]] || { echo "Missing validation permit" >&2; exit 2; }
+      VALIDATION_PERMIT="$2"; shift 2 ;;
+    supervised_hardware_validation:=*) VALIDATION="${1#supervised_hardware_validation:=}"; shift ;;
+    validation_permit:=*) VALIDATION_PERMIT="${1#validation_permit:=}"; shift ;;
+    hand_source:=*) HAND_SOURCE="${1#hand_source:=}"; source_selected=true; shift ;;
+    dry_run:=*) DRY_RUN="${1#dry_run:=}"; dry_selected=true; shift ;;
+    *) extra_args+=("$1"); shift ;;
+  esac
+done
+[[ "$HAND_SOURCE" == manus || "$HAND_SOURCE" == litchibot ]] || {
+  echo "hand source must be manus or litchibot" >&2; exit 2;
+}
+[[ "$DRY_RUN" == true || "$DRY_RUN" == false ]] || {
+  echo "dry_run must be true or false" >&2; exit 2;
+}
+[[ "$VALIDATION" == true || "$VALIDATION" == false ]] || { echo "Invalid validation mode" >&2; exit 2; }
+if [[ "$VALIDATION" == true && ( "$HAND_SOURCE" != litchibot || "$DRY_RUN" == true || -z "$VALIDATION_PERMIT" ) ]]; then
+  echo "Supervised validation requires LitchiBot, an explicit permit, and no --dry-run." >&2
+  exit 2
+fi
+if [[ "$HAND_SOURCE" == litchibot && "$DRY_RUN" != true && "$VALIDATION" != true && -z "$FULL_CONFIG" ]]; then
+  echo "BLOCKER FOR REAL HARDWARE MOTION: ordinary LitchiBot hardware startup prohibited; use dry-run or supervised validation with permit." >&2
+  exit 2
+fi
 
 GELLO_REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$GELLO_REPO/ops/lib/deployment_env.sh"
+if [[ "$HAND_SOURCE" == litchibot ]]; then
+  deployment_export_litchibot_env "$GELLO_REPO/docker/.env"
+fi
 configured_litchi="$(deployment_env_value "$GELLO_REPO/docker/.env" LITCHI_REPO)"
 legacy_litchi=/home/descfly/ZH/manus_sharpa_record/litchi_hardware
 if [[ -n "${LITCHI_REPO:-}" ]]; then
@@ -70,17 +109,43 @@ fi
   exit 1
 }
 
+if [[ -n "$FULL_CONFIG" ]]; then
+  # An explicit managed session uses the SAME runtime guard, initially DISABLED.
+  # This never changes standalone defaults and never converts dry-run into hardware.
+  PYTHONPATH="$GELLO_REPO${PYTHONPATH:+:$PYTHONPATH}" "$LITCHI_REPO/.pixi/envs/ros2/bin/python" - "$FULL_CONFIG" "$HAND_SOURCE" "$DRY_RUN" <<'CHECK'
+import sys
+from adapters.litchibot.full_control import load_full_config
+config=load_full_config(sys.argv[1])
+if config['source']!=sys.argv[2] or (sys.argv[3]=='true' and config['mode']!='fake'):
+    raise SystemExit('Full source/dry-run conflict')
+CHECK
+  extra_args+=("full_teleop:=true" "full_config:=$FULL_CONFIG"
+    "validation_driver_script:=$GELLO_REPO/adapters/litchibot/validation_driver.py")
+fi
+
 # Default to the metaglove calibration when the caller passes none, matching the
 # documented stock invocation.
 have_calibration=false
-for argument in "$@"; do
+for argument in "${extra_args[@]}"; do
   case "$argument" in
     manus_calibration_directory:=*) have_calibration=true ;;
   esac
 done
-extra_args=("$@")
 if [[ "$have_calibration" == false ]]; then
   extra_args+=("manus_calibration_directory:=$LITCHI_REPO/calibration/metaglove")
+fi
+if [[ "$source_selected" == true && "$HAND_SOURCE" != manus ]]; then
+  extra_args+=("hand_source:=$HAND_SOURCE")
+fi
+if [[ "$dry_selected" == true ]]; then
+  extra_args+=("dry_run:=$DRY_RUN")
+fi
+if [[ "$HAND_SOURCE" == litchibot ]]; then
+  extra_args+=("litchibot_bridge_script:=$GELLO_REPO/adapters/litchibot/terminal2_bridge.py")
+fi
+if [[ "$VALIDATION" == true ]]; then
+  extra_args+=("supervised_hardware_validation:=true" "validation_permit:=$VALIDATION_PERMIT"
+    "validation_driver_script:=$GELLO_REPO/adapters/litchibot/validation_driver.py")
 fi
 
 echo "Sharpa hands -> CycloneDDS, ROS_LOCALHOST_ONLY=1, ROS_DOMAIN_ID=$ARMS_DOMAIN"

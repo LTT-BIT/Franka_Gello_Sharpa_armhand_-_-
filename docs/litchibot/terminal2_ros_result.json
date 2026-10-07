@@ -1,0 +1,341 @@
+{
+  "worker": {
+    "type": "summary",
+    "dry_run": true,
+    "sides": {
+      "left": {
+        "count": 899,
+        "max_delta_rad": 0.011214601161164683,
+        "statuses": {
+          "partial": 899
+        },
+        "invalid_glove_joints": {
+          "thumb_mcp_flex": 899,
+          "thumb_pip_flex": 899
+        },
+        "mean_dt_s": 0.03332876328173719,
+        "p50_dt_s": 0.033336252499999997,
+        "p95_dt_s": 0.0381463731,
+        "max_dt_s": 0.040472204,
+        "target_hz": 30.00411361041888
+      },
+      "right": {
+        "count": 899,
+        "max_delta_rad": 0.010362029687893681,
+        "statuses": {
+          "solved": 899
+        },
+        "invalid_glove_joints": {},
+        "mean_dt_s": 0.03332876328173719,
+        "p50_dt_s": 0.033336252499999997,
+        "p95_dt_s": 0.0381463731,
+        "max_dt_s": 0.040472204,
+        "target_hz": 30.00411361041888
+      }
+    },
+    "errors": 2,
+    "last_error": "Malformed UWB packet: Invalid/duplicate sensor ID",
+    "sent": 0
+  },
+  "bridge": {
+    "type": "summary",
+    "published": {
+      "left": 899,
+      "right": 899
+    },
+    "rejected": 0,
+    "malformed_worker_lines": 0,
+    "worker_exit_code": 0,
+    "hardware_send_count": 0,
+    "fake_driver_confirmed": true
+  },
+  "ros_monitor": {
+    "errors": {},
+    "topics": {
+      "/sharpa/left/tactile/thumb/raw": {
+        "frames": 1829,
+        "hz": 60.00024428042562,
+        "mean_dt_ms": 16.666598811269147,
+        "p95_dt_ms": 17.035431199999998,
+        "max_dt_ms": 20.352138,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/thumb/wrench": {
+        "frames": 1829,
+        "hz": 60.00035746493056,
+        "mean_dt_ms": 16.6665673714442,
+        "p95_dt_ms": 16.8062699,
+        "max_dt_ms": 20.008070999999997,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/thumb/deformation": {
+        "frames": 1829,
+        "hz": 60.00037843892959,
+        "mean_dt_ms": 16.666561545404814,
+        "p95_dt_ms": 16.909369,
+        "max_dt_ms": 20.004375,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/index/wrench": {
+        "frames": 1829,
+        "hz": 60.000389924415835,
+        "mean_dt_ms": 16.666558355032823,
+        "p95_dt_ms": 16.89254825,
+        "max_dt_ms": 20.029773000000002,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/index/deformation": {
+        "frames": 1829,
+        "hz": 60.00037628835549,
+        "mean_dt_ms": 16.666562142778993,
+        "p95_dt_ms": 16.86938005,
+        "max_dt_ms": 20.0333,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/index/raw": {
+        "frames": 1829,
+        "hz": 60.0003845755503,
+        "mean_dt_ms": 16.66655984080963,
+        "p95_dt_ms": 16.85679545,
+        "max_dt_ms": 20.033009,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/middle/wrench": {
+        "frames": 1829,
+        "hz": 60.00038998349757,
+        "mean_dt_ms": 16.666558338621446,
+        "p95_dt_ms": 16.96395735,
+        "max_dt_ms": 20.036946999999998,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/middle/deformation": {
+        "frames": 1829,
+        "hz": 60.00040701282662,
+        "mean_dt_ms": 16.6665536083151,
+        "p95_dt_ms": 16.94303885,
+        "max_dt_ms": 20.039703,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/middle/raw": {
+        "frames": 1829,
+        "hz": 60.00041478601842,
+        "mean_dt_ms": 16.66655144912473,
+        "p95_dt_ms": 16.927285,
+        "max_dt_ms": 20.042117,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/ring/wrench": {
+        "frames": 1829,
+        "hz": 60.000419500744805,
+        "mean_dt_ms": 16.666550139496717,
+        "p95_dt_ms": 17.012117149999998,
+        "max_dt_ms": 20.047127,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/ring/deformation": {
+        "frames": 1829,
+        "hz": 60.000424434074596,
+        "mean_dt_ms": 16.66654876914661,
+        "p95_dt_ms": 17.00361265,
+        "max_dt_ms": 20.050453,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/ring/raw": {
+        "frames": 1829,
+        "hz": 60.000425284852504,
+        "mean_dt_ms": 16.66654853282276,
+        "p95_dt_ms": 16.9938279,
+        "max_dt_ms": 20.05354,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/pinky/wrench": {
+        "frames": 1829,
+        "hz": 60.00012654315529,
+        "mean_dt_ms": 16.66663151586433,
+        "p95_dt_ms": 16.9994371,
+        "max_dt_ms": 20.063378999999998,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/pinky/deformation": {
+        "frames": 1829,
+        "hz": 60.00012908758626,
+        "mean_dt_ms": 16.666630809080964,
+        "p95_dt_ms": 17.01066945,
+        "max_dt_ms": 20.06435,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/tactile/pinky/raw": {
+        "frames": 1829,
+        "hz": 60.00051664317949,
+        "mean_dt_ms": 16.666523155908095,
+        "p95_dt_ms": 17.02072115,
+        "max_dt_ms": 20.066334,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/thumb/wrench": {
+        "frames": 1829,
+        "hz": 60.00016803985794,
+        "mean_dt_ms": 16.66661998905908,
+        "p95_dt_ms": 16.9857211,
+        "max_dt_ms": 20.136439999999997,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/thumb/deformation": {
+        "frames": 1829,
+        "hz": 60.00017139370622,
+        "mean_dt_ms": 16.666619057439828,
+        "p95_dt_ms": 17.00635135,
+        "max_dt_ms": 20.1418,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/thumb/raw": {
+        "frames": 1829,
+        "hz": 60.0001744324546,
+        "mean_dt_ms": 16.66661821334792,
+        "p95_dt_ms": 17.0178912,
+        "max_dt_ms": 20.142992,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/index/wrench": {
+        "frames": 1829,
+        "hz": 60.00047072863836,
+        "mean_dt_ms": 16.666535909737416,
+        "p95_dt_ms": 16.9653235,
+        "max_dt_ms": 20.143193,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/index/deformation": {
+        "frames": 1829,
+        "hz": 60.0004767077262,
+        "mean_dt_ms": 16.66653424890591,
+        "p95_dt_ms": 16.979954749999997,
+        "max_dt_ms": 20.140849,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/index/raw": {
+        "frames": 1829,
+        "hz": 60.00048120582865,
+        "mean_dt_ms": 16.666532999452954,
+        "p95_dt_ms": 16.9900983,
+        "max_dt_ms": 20.139014,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/middle/wrench": {
+        "frames": 1829,
+        "hz": 60.000487226275936,
+        "mean_dt_ms": 16.666531327133477,
+        "p95_dt_ms": 16.9683867,
+        "max_dt_ms": 19.939729,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/middle/deformation": {
+        "frames": 1829,
+        "hz": 60.0004932624796,
+        "mean_dt_ms": 16.66652965043764,
+        "p95_dt_ms": 16.9699123,
+        "max_dt_ms": 20.160497,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/middle/raw": {
+        "frames": 1829,
+        "hz": 60.000497900411794,
+        "mean_dt_ms": 16.666528362144422,
+        "p95_dt_ms": 16.972078800000002,
+        "max_dt_ms": 20.159574,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/ring/wrench": {
+        "frames": 1829,
+        "hz": 60.00050397797499,
+        "mean_dt_ms": 16.666526673960615,
+        "p95_dt_ms": 16.973857399999996,
+        "max_dt_ms": 19.968154,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/ring/deformation": {
+        "frames": 1829,
+        "hz": 60.000507865567904,
+        "mean_dt_ms": 16.6665255940919,
+        "p95_dt_ms": 16.97368295,
+        "max_dt_ms": 19.967202,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/ring/raw": {
+        "frames": 1829,
+        "hz": 60.00051554031588,
+        "mean_dt_ms": 16.666523462253828,
+        "p95_dt_ms": 16.97344385,
+        "max_dt_ms": 19.967071999999998,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/pinky/wrench": {
+        "frames": 1829,
+        "hz": 60.00052396737653,
+        "mean_dt_ms": 16.6665211214442,
+        "p95_dt_ms": 17.00233785,
+        "max_dt_ms": 19.966751000000002,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/pinky/deformation": {
+        "frames": 1829,
+        "hz": 60.00052872150808,
+        "mean_dt_ms": 16.666519800875275,
+        "p95_dt_ms": 16.997406350000002,
+        "max_dt_ms": 19.967894,
+        "max_delta_rad": 0
+      },
+      "/sharpa/right/tactile/pinky/raw": {
+        "frames": 1829,
+        "hz": 60.00053045851905,
+        "mean_dt_ms": 16.666519318380743,
+        "p95_dt_ms": 16.99246295,
+        "max_dt_ms": 19.968764999999998,
+        "max_delta_rad": 0
+      },
+      "/sharpa/left/joint_states": {
+        "frames": 914,
+        "hz": 29.999975991147362,
+        "mean_dt_ms": 33.333360009857614,
+        "p95_dt_ms": 33.3995124,
+        "max_dt_ms": 33.582896,
+        "max_delta_rad": 0.07716784399999999
+      },
+      "/sharpa/right/joint_states": {
+        "frames": 914,
+        "hz": 29.999915745581642,
+        "mean_dt_ms": 33.33342694961665,
+        "p95_dt_ms": 33.648810000000005,
+        "max_dt_ms": 36.713824,
+        "max_delta_rad": 0.07718571800000001
+      },
+      "/sharpa/left/command": {
+        "frames": 899,
+        "hz": 30.005112963803775,
+        "mean_dt_ms": 33.327653230512254,
+        "p95_dt_ms": 38.4984934,
+        "max_dt_ms": 43.724160999999995,
+        "max_delta_rad": 0.07716784399999999
+      },
+      "/sharpa/right/command": {
+        "frames": 899,
+        "hz": 30.00509797640991,
+        "mean_dt_ms": 33.32766987750557,
+        "p95_dt_ms": 38.5175775,
+        "max_dt_ms": 43.812942,
+        "max_delta_rad": 0.07718571800000001
+      }
+    },
+    "max_sharpa_driver_nodes": 1,
+    "hardware_send_count": 0,
+    "hardware_mode": "fake; asserted by production launch and bridge guard"
+  },
+  "historical_real_motion_blocker": {
+    "left_max_delta_rad": 1.5708,
+    "right_max_delta_rad": 0.0105,
+    "status": "BLOCKER FOR REAL HARDWARE MOTION"
+  },
+  "test_results": {
+    "python310": "47 passed, 8 skipped (ROS-only tests run separately)",
+    "ros_python312": "36 passed"
+  }
+}

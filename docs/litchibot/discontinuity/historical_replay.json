@@ -1,0 +1,58 @@
+{
+  "frames_replayed": 1798,
+  "mismatches": [],
+  "peak_stages": [
+    {
+      "sequence": 396,
+      "canonical_pinky_mcp_flex_rad": 2.094395160675049,
+      "kinematic_pinky_mcp_flex_rad": 1.65,
+      "kinematic_pinky_mcp_swing_rad": 0.6,
+      "source_deg": 94.53803619658582,
+      "normalized_before_vendor_clamp": 1.260507149287811,
+      "vendor_target_rad": 1.5708,
+      "schema_clip_changes_value": false,
+      "valid_glove_flex": true,
+      "valid_target_fe": true,
+      "held": [],
+      "fallback": [
+        "thumb_MCP_FE",
+        "thumb_IP"
+      ],
+      "dexterous_cmc_yaw_rad": 1.382510037890647,
+      "dexterous_cmc_swing_rad": -1.183509404093006
+    },
+    {
+      "sequence": 397,
+      "canonical_pinky_mcp_flex_rad": 0.0,
+      "kinematic_pinky_mcp_flex_rad": 0.0,
+      "kinematic_pinky_mcp_swing_rad": -0.6,
+      "source_deg": 0.0,
+      "normalized_before_vendor_clamp": 0.0,
+      "vendor_target_rad": 0.0,
+      "schema_clip_changes_value": false,
+      "valid_glove_flex": true,
+      "valid_target_fe": true,
+      "held": [],
+      "fallback": [
+        "thumb_MCP_FE",
+        "thumb_IP"
+      ],
+      "dexterous_cmc_yaw_rad": 1.3825097700701612,
+      "dexterous_cmc_swing_rad": -1.183510777227455
+    }
+  ],
+  "rule": {
+    "sources": {
+      "pinky_mcp_flex": 1.0
+    },
+    "input_range_deg": [
+      0,
+      75
+    ],
+    "output_range": [
+      0.0,
+      1.5708
+    ]
+  },
+  "note": "saved mapping inputs replay only; historical raw IMU unavailable, not a V3.5 replay"
+}

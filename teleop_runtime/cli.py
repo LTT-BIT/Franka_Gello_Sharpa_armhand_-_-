@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import math
 import os
 import signal
 import sys
@@ -151,7 +152,7 @@ def main() -> None:
     parser.add_argument(
         "--hand-source",
         default="none",
-        choices=("none", "pico", "manus", "wuji"),
+        choices=("none", "pico", "manus", "wuji", "litchibot"),
         help="hand source integrated into this operator process (default: none)",
     )
     parser.add_argument(
@@ -266,7 +267,30 @@ def main() -> None:
         default=1.0,
         help="Wuji Hand 2 per-joint current limit in amps",
     )
+    from adapters.litchibot.cli import add_options as add_litchibot_options
+
+    add_litchibot_options(parser)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="LitchiBot hands-only dry-run; initializes no GELLO/FR3 devices")
+    parser.add_argument("--duration", type=float, default=30.0,
+                        help="LitchiBot dry-run seconds; 0 until Ctrl+C")
+    parser.add_argument("--enable-hand-output", action="store_true",
+                        help="Explicitly allow LitchiBot UDP hand output after per-side engagement")
     args = parser.parse_args()
+    if (args.dry_run or args.enable_hand_output) and args.hand_source != "litchibot":
+        parser.error("--dry-run/--enable-hand-output currently require --hand-source litchibot")
+    if args.dry_run and args.enable_hand_output:
+        parser.error("--dry-run cannot be combined with --enable-hand-output")
+    if not math.isfinite(args.duration) or args.duration < 0:
+        parser.error("--duration must not be negative")
+    if args.hand_source == "litchibot" and (
+        args.left_hand_model or args.right_hand_model or args.right_hand_strategy_config
+    ):
+        parser.error("LitchiBot uses independent Sharpa mapping; Manus model/strategy overrides do not apply")
+    if args.dry_run:
+        from adapters.litchibot.cli import run_dry_run
+
+        raise SystemExit(run_dry_run(args))
     preset_actions = load_preset_actions(
         args.preset_config, args.preset_data_root
     )
@@ -467,6 +491,16 @@ def main() -> None:
                     "right hand strategy -> powderweighing "
                     f"({args.right_hand_strategy_config})"
                 )
+        elif args.hand_source == "litchibot":
+            from adapters.litchibot import LitchiBotHandPipeline
+            from adapters.litchibot.cli import pipeline_options
+            from adapters.litchibot.transport import UdpSharpaSender
+
+            hand_pipeline = LitchiBotHandPipeline(
+                **pipeline_options(args),
+                dry_run=not args.enable_hand_output,
+                sender_factory=lambda: UdpSharpaSender(port=args.sharpa_relay_port),
+            )
         elif args.hand_source == "wuji":
             sys.path.insert(0, str(REPO_ROOT))
             from adapters.wuji import WujiHandPipeline

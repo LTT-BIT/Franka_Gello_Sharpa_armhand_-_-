@@ -1,0 +1,38 @@
+[
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/retargeting/base.py",
+    "source_sha256": "8f852225e5a8a1e3a9080802667021f08169e339d9f2e4a6427453212ca9d2d4",
+    "destination": "adapters/litchibot/vendor/base.py",
+    "changes": "Relative imports/resource location; visual_angle drops GUI-only map_hand_frame. Mapping/math methods unchanged."
+  },
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/math_utils/rotations.py",
+    "source_sha256": "718d7fc0c86bf54d884b91b8b2652e2d75155fb2c17c1cecbec441353dc1de43",
+    "destination": "adapters/litchibot/vendor/rotations.py",
+    "changes": "Relative imports/resource location; visual_angle drops GUI-only map_hand_frame. Mapping/math methods unchanged."
+  },
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/retargeting/dexterous_cmc.py",
+    "source_sha256": "9fffe7339def453b32a5cac35a8f042b409bd8ddee56fa39e97db7ad9f45f279",
+    "destination": "adapters/litchibot/vendor/dexterous_cmc.py",
+    "changes": "Relative imports/resource location; visual_angle drops GUI-only map_hand_frame. Mapping/math methods unchanged."
+  },
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/retargeting/visual_angle.py",
+    "source_sha256": "276e50f89c7a417d71b7d09952aa21158b9fb75d2bdf60bf4fabed00b0cad516",
+    "destination": "adapters/litchibot/vendor/visual_angle.py",
+    "changes": "Relative imports/resource location; visual_angle drops GUI-only map_hand_frame. Mapping/math methods unchanged."
+  },
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/config/retargeting/sharpa/wave.json",
+    "source_sha256": "d54e657f982e823ff0844f4e3de9a787e69583218443454c87ceeb7a205dce56",
+    "destination": "config/litchibot/wave.json",
+    "changes": "none"
+  },
+  {
+    "source": "/home/user/litchibot_glove/litchibot_glove_gui/src/teleop_gloves/config/hand_model_mapping/dexterous_hand_cmc_mapping.json",
+    "source_sha256": "db4ec09aba010681222384c55bd1c29cd6f0f505c183c591b7c7b381806b14ae",
+    "destination": "config/litchibot/dexterous_hand_cmc_mapping.json",
+    "changes": "none"
+  }
+]

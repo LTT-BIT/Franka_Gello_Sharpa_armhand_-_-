@@ -1,0 +1,917 @@
+{
+  "date": "2026-10-06",
+  "physical_hardware_started": false,
+  "physical_sdk_send_count": 0,
+  "tests": [
+    {
+      "name": "ROS adapters and original retarget/Sharpa fake driver regressions",
+      "passed": 107,
+      "skipped": 0,
+      "failed": 0,
+      "ROS_DOMAIN_ID": 199,
+      "ROS_LOCALHOST_ONLY": 1
+    },
+    {
+      "name": "Qt operator GUI suite",
+      "passed": 12,
+      "skipped": 0,
+      "failed": 0
+    },
+    {
+      "name": "host adapter/Manus regressions",
+      "passed": 71,
+      "skipped": 26,
+      "failed": 0
+    },
+    {
+      "name": "final normal continuity unit and runtime checks, including two additional cases",
+      "passed": 15,
+      "skipped": 0,
+      "failed": 0
+    }
+  ],
+  "notes": [
+    "Test groups overlap; do not sum into a unique-test count.",
+    "Host skips ROS-dependent tests; ROS suite uses original mock hardware and spies prohibit physical SDK loading.",
+    "Two additional source-only/window-expiry/early-recovery cases were verified in the final 15-test group.",
+    "Python compilation and git diff --check passed.",
+    "Shared link returned no readable body and browser stayed at loading page; local original chat and repository diagnostics supplied context.",
+    "Initial GUI collection with the teleop Python failed due to absent PySide6; existing /tmp/gello-full-gui-tests environment passed the full Qt suite."
+  ],
+  "followup_slew_fix": {
+    "passed": 25,
+    "failed": 0,
+    "reproduced_before_fix": true,
+    "physical_hardware_started": false,
+    "notes": [
+      "Mock driver regression tests use private test-only lock/socket paths while user full session is running.",
+      "Production .20s timeout and .5 rad/s slew unchanged.",
+      "Initial broader ROS rerun encountered the running session hardware lock; user session was left untouched."
+    ]
+  },
+  "diagnostic_threshold_change": {
+    "threshold_rad": 0.18,
+    "hardware_unchanged": true,
+    "supervised_unchanged": true,
+    "target_and_source_boundaries": [
+      {
+        "delta": 0.143064,
+        "FAULT": false
+      },
+      {
+        "delta": 0.179,
+        "FAULT": false
+      },
+      {
+        "delta": 0.185638,
+        "FAULT": true
+      },
+      {
+        "delta": 0.18,
+        "FAULT": true
+      }
+    ],
+    "ROS": {
+      "passed": 50,
+      "deselected": 1
+    },
+    "host": {
+      "passed": 72,
+      "skipped": 10
+    },
+    "startup_log_assertion_passed": true,
+    "physical_hardware_started": false
+  },
+  "severity_refactor": {
+    "date": "2026-10-06",
+    "scope": "LitchiBot normal full teleop and fake/no-send diagnostic; supervised and Manus original chains unchanged",
+    "host_regression": {
+      "passed": 112,
+      "skipped": 40
+    },
+    "ROS_mock_driver_and_strict_regression": {
+      "passed": 62,
+      "deselected": 1,
+      "ROS_DOMAIN_ID": 199
+    },
+    "Qt_GUI_suite": {
+      "passed": 12
+    },
+    "final_targeted_unit": {
+      "passed": 40
+    },
+    "notes": [
+      "Groups overlap; counts are not a unique-test total.",
+      "The deselected strict guarded-driver integration test uses the live account hardware lock; user session was left untouched.",
+      "Driver graph/source disconnect/driver disconnect/timeouts/extreme regressions latch both hands.",
+      "Normal and diagnostic partial/moderate/acquisition/slew cases pause only the affected side and require 30 stable frames for READY.",
+      "Diagnostic moderate .18 rad now means SOFT_HOLD; this supersedes the previous strict diagnostic behavior.",
+      "No physical SDK loaded, no real hardware started; sustained onsite operation remains to be verified.",
+      "Python compilation and git diff --check passed.",
+      "Hard stop occurs even if structured logging raises; verified by injected logger failure."
+    ]
+  },
+  "source_gap_anchor_fix": {
+    "date": "2026-10-06",
+    "diagnostic_threshold_rad": 0.18,
+    "arrival_soft_hold_s": 0.2,
+    "sustained_packet_loss_hard_s": 1.0,
+    "targeted_gap_regression": {
+      "passed": 17
+    },
+    "ROS_mock_driver_and_strict_regression": {
+      "passed": 60,
+      "deselected": 1,
+      "ROS_DOMAIN_ID": 199
+    },
+    "host_regression_before_final_inbox_case": {
+      "passed": 129,
+      "skipped": 44
+    },
+    "GUI_regression": {
+      "passed": 12
+    },
+    "notes": [
+      "Fresh post-gap frame updates continuity anchor before SoftHold and is baseline-only; next frames compare adjacent samples.",
+      "14.8s and 19.9s old anchors followed by 157 frames at 33.333333ms: dt stays adjacent, cross-gap delta excluded.",
+      "Short arrival loss stops affected side at .20s; .1/.18 raw thresholds, freshness and GUI/driver timeouts unchanged.",
+      "Sustained no-packet loss over 1.0s remains globally hard latched; publisher/driver/duplicate checks unchanged.",
+      "180 repeated hard frames generate one first-cause HARD_FAULT event; original driver stop is not bypassed.",
+      "All group counts overlap. Live user session left untouched; real SDK/hardware not started.",
+      "Python compilation and git diff --check passed."
+    ]
+  },
+  "minimum_interference": {
+    "date": "2026-10-07",
+    "physical_hardware_started": false,
+    "physical_sdk_load_count": 0,
+    "physical_sdk_send_count": 0,
+    "normal_single_frame_threshold_rad": null,
+    "diagnostic_single_frame_threshold_rad": null,
+    "historical_diagnostic_reference_rad": 0.18,
+    "supervised_threshold_rad": 0.1,
+    "tests": [
+      {
+        "name": "ROS adapter suite",
+        "passed": 196,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199,
+        "ROS_LOCALHOST_ONLY": 1,
+        "command": "portable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot -k \"not guarded_driver and not test_cli\" -q --tb=short"
+      },
+      {
+        "name": "Final expanded normal/fake original driver integration",
+        "passed": 52,
+        "failed": 0,
+        "command": "portable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot/test_full_teleop.py::test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch -q --tb=short"
+      },
+      {
+        "name": "Qt GUI / real JSON-TCP integration",
+        "passed": 12,
+        "failed": 0,
+        "command": "/tmp/gello-full-gui-tests/bin/python -m pytest apps/operator_gui -q --tb=short"
+      },
+      {
+        "name": "Final host adapters / Manus / operator poses",
+        "passed": 166,
+        "failed": 0,
+        "skipped": 70,
+        "command": "PYTHONPATH=\"$PWD:$PWD/adapters/pico/src:$PWD/adapters/manus/python:$PWD/ros_ws/src/teleop_core\" /home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot adapters/pico/tests/test_manus_pipeline.py test_operator_hand_poses.py -q --tb=short"
+      }
+    ],
+    "behavior": {
+      "isolated_delta_rad": [
+        0.143064,
+        0.179,
+        0.185638,
+        0.19,
+        0.25,
+        0.4
+      ],
+      "isolated_moderate_behavior": "WARNING / bounded command; ACTIVE; no single-frame shared cutoff",
+      "hold_pattern": "per-joint 3 large reversals in last 8 frames / 0.5s; 3 consecutive unusable frames; bounded-output/feedback divergence persistent 2s",
+      "permit_on_soft_hold": "preserved per side",
+      "recovery": "30 valid stable frames; automatically ACTIVE if permit ON, READY otherwise; recovery frame not executed",
+      "stop_during_hold": "permit OFF; no automatic reauthorization",
+      "opposite_side": "keeps ACTIVE and forwards",
+      "output_speed_rad_s": 0.5,
+      "dt_cap_s": 0.05,
+      "acquisition_dt_s": 0.03333333333333333,
+      "source_gap": "baseline-only first fresh frame; adjacent dt ~0.033s thereafter, including 14.8/19.9s old anchors",
+      "hard_fault_log": "first root cause once; recovery_state HARD_FAULT",
+      "warning_log": "2-second dedup with suppressed_events periodic summaries",
+      "hold_arm": "arm held while both hand permits and ACTIVE state remain ON"
+    },
+    "notes": [
+      "Test groups overlap; do not sum into unique count. Expanded driver integration adds normal hardware configuration, replacing devices and SDK enable/discovery with in-memory boundaries; original sender/stop path is exercised.",
+      "ROS suite excludes CLI tests requiring host pinocchio; those pass in host environment. Shared direct supervised-driver integration is not run against a potentially user-owned shared lock; existing supervised strict unit regressions run.",
+      "No physical SDK loaded or real robot/hand launched. Software regressions do not establish sustained physical teleoperation acceptance.",
+      "Existing supervised RawContinuityGate/MotionLatch and Manus factory behavior are retained.",
+      "All-repository threshold search and production constructor tracing classified in normal_discontinuity.md; mapping/calibration/URDF values and historical records retained.",
+      "Python compileall and git diff --check passed. Persistent running Python processes require one normal restart to load changes."
+    ]
+  },
+  "normal_shared_slew_removal": {
+    "date": "2026-10-07",
+    "physical_hardware_started": false,
+    "physical_sdk_load_count": 0,
+    "physical_sdk_send_count": 0,
+    "scope": "LitchiBot normal full teleop and matching full fake/no-send; standalone Terminal2 diagnostic unchanged",
+    "normal_max_speed_rad_s": null,
+    "replacement_uniform_speed_cap": null,
+    "changes": [
+      "TargetGate accepts explicit None speed cap and preserves validated targets",
+      "FullHandRuntime selects None only for MinimumMotionLatch",
+      "MinimumMotionLatch.bound_command removed",
+      "MinimumMotionLatch overrides added shared slew/acquisition amplitude rejection; core command checks preserved",
+      "Persistent target/measured divergence remains a per-side HOLD gate, not a command clamp"
+    ],
+    "tests": [
+      {
+        "name": "Complete isolated ROS fake/no-send adapters and original driver integration",
+        "passed": 223,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199,
+        "ROS_LOCALHOST_ONLY": 1,
+        "command": "portable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot -k \"not guarded_driver and not test_cli\" -q --tb=short"
+      },
+      {
+        "name": "Qt GUI integration",
+        "passed": 12,
+        "failed": 0,
+        "command": "/tmp/gello-full-gui-tests/bin/python -m pytest apps/operator_gui -q --tb=short"
+      },
+      {
+        "name": "Complete host adapters / Manus / operator poses",
+        "passed": 167,
+        "failed": 0,
+        "skipped": 70,
+        "command": "/home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot adapters/pico/tests/test_manus_pipeline.py test_operator_hand_poses.py -q --tb=short"
+      }
+    ],
+    "assertions": [
+      "0.19/0.25/0.4 rad monotonic valid movement forwarded as exact target, not clamped",
+      "Initial acquisition and 1ns adjacent target interval preserve values with None cap",
+      "Original mock driver receives exact .08/.143064/.179/.185638 targets in normal and full-fake configurations",
+      "No artificial acquisition amplitude reject during recovery; persistent permit auto recovery remains",
+      "NaN/Inf, corrupted shape/order, physical limit violations, missing/stale feedback and sequence replay remain rejected",
+      "Source gap baseline repair, per-side pattern HOLD, explicit Stop, DISENGAGE ALL, GUI disconnect and hard-latch dedup preserved",
+      "Supervised strict unit tests and Manus unchanged path remain passing"
+    ],
+    "remaining_value_modifiers": [
+      "vendor VisualAngleRetargeter: clamp_inputs/input_range -> output_range mapping",
+      "SharpaRetargeter: unavailable-channel hold/fallback; final physical JOINT_LIMITS clip",
+      "TargetGate: physical JOINT_LIMITS clip and invalid-channel hold; full raw gate rejects partial-valid frames before execution",
+      "Original driver/SDK: original validation, speed/current coefficient and interpolate/native hardware motion handling unchanged"
+    ],
+    "notes": [
+      "No new uniform speed threshold introduced. None is an explicit absence of application-layer shared slew cap.",
+      "SOFT_HOLD/reject/HARD_FAULT may suppress execution but do not rewrite accepted normal target values.",
+      "CLI tests need host pinocchio and pass there. Shared direct guarded-driver integration is excluded to avoid interfering with any user-owned production lock; isolated original-driver integrations run with mock SDK boundaries.",
+      "ROS/host groups overlap; do not sum unique counts.",
+      "No original Sharpa driver/SDK/vendor mapping/native limits, joint physical limits, Manus/V4, arm, tactile or recorder code modified in this turn.",
+      "Python compileall and git diff --check passed. Running processes require one restart to load code."
+    ]
+  },
+  "gui_heartbeat_state_fix": {
+    "date": "2026-10-07",
+    "observed_log": "/home/user/.ros/log/python_42611_1791342346734.log",
+    "observed_reason": "GUI stale/replayed heartbeat",
+    "observed_time_after_driver_connect_s": 0.267,
+    "historical_packet_cause": "Original log lacks age/sequence detail; arrival delay vs sequence reset cannot be distinguished retroactively.",
+    "changes": [
+      "Normal/fake unarmed stale/replay heartbeat rejected WARNING without creating permit or latching global fault",
+      "Heartbeat sequence baseline belongs to authenticated TCP connection; transport generation overrides client fields; reset only when permits OFF",
+      "Authorized stale/replay/disconnect stays HARD_FAULT; original 0.20s timeout retained",
+      "Full runtime drains GUI heartbeat before watchdog check",
+      "Client and server TCP_NODELAY, Qt write flush",
+      "Hard heartbeat errors include age/sequence/previous_sequence; existing latch cannot be cleared by reconnect"
+    ],
+    "tests": [
+      {
+        "name": "Isolated ROS fake/no-send adapter and original driver suite",
+        "passed": 232,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199
+      },
+      {
+        "name": "Real Qt/TCP GUI integration, including actual FullHandRuntime dispatch",
+        "passed": 13,
+        "failed": 0
+      },
+      {
+        "name": "Host adapters / Manus / operator poses",
+        "passed": 175,
+        "failed": 0,
+        "skipped": 71
+      },
+      {
+        "name": "Focused heartbeat unit regression",
+        "passed": 8,
+        "failed": 0
+      }
+    ],
+    "physical_hardware_started": false,
+    "physical_sdk_send_count": 0,
+    "production_session_restarted": false,
+    "production_hard_fault_cleared": false,
+    "notes": [
+      "Groups overlap; do not sum unique counts.",
+      "Two DDS/mock driver tests initially hit the live user hardware lock. Updated test-only fixtures to isolate lock/status paths for driver and bridge; did not release or bypass production lock. Complete isolated suite then passed.",
+      "Compileall and git diff --check passed.",
+      "Real GUI regression covers delayed first packet, fresh recovery/Start, permit OFF GUI restart with sequence 1, per-side authority. Authorized bad heartbeat and supervised strict behavior verified separately."
+    ]
+  },
+  "control_port_restart_fix": {
+    "date": "2026-10-07",
+    "cause": "No active listener; port 5593 retained closed TCP connections in TIME_WAIT. Launcher probe and HandControlServer did not enable SO_REUSEADDR.",
+    "changes": [
+      "HandControlServer enables SO_REUSEADDR, not SO_REUSEPORT",
+      "Launcher probe uses SO_REUSEADDR plus bind/listen; live listeners and existing Docker services remain refused",
+      "Port error includes the actual control port number"
+    ],
+    "tests": [
+      {
+        "name": "Immediate restart after server-side TCP close; active listener exclusion; preflight",
+        "passed": 2,
+        "failed": 0
+      },
+      {
+        "name": "Isolated ROS fake/no-send adapter suite",
+        "passed": 234,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199
+      },
+      {
+        "name": "Qt GUI integration",
+        "passed": 13,
+        "failed": 0
+      }
+    ],
+    "physical_hardware_started": false,
+    "physical_sdk_send_count": 0,
+    "production_processes_killed": false,
+    "production_launcher_started": false,
+    "port_5593_bind_check": "available",
+    "notes": [
+      "Groups overlap; do not sum unique counts.",
+      "Compileall and git diff --check passed.",
+      "Actual old pre-fix connections were initially observed in TIME_WAIT; current port was subsequently verified available."
+    ]
+  },
+  "normal_forwarding_redesign": {
+    "date": "2026-10-07",
+    "scope": "LitchiBot normal full teleop and matching full fake/no-send; supervised/Manus retained",
+    "physical_hardware_started": false,
+    "physical_sdk_load_count": 0,
+    "physical_sdk_send_count": 0,
+    "production_session_restarted": false,
+    "production_hard_fault_cleared": false,
+    "architecture": {
+      "authority": "NormalHandAuthority, independent of validation latch",
+      "target_check": "BasicNormalTarget, independent of RawContinuityGate/TargetGate",
+      "runtime": "NormalHandRuntime",
+      "normal_shared_jump_threshold": null,
+      "normal_shared_speed_cap": null,
+      "pattern_or_partial_escalation": false,
+      "validation_proof_required": false,
+      "recovery_warmup_required": false
+    },
+    "behavior": {
+      "start_stop": "per-side forwarding ON/OFF; Stop does not stop/disconnect device or processes",
+      "partial_valid": "existing finite vendor fallback accepted unchanged",
+      "fast_motion": "exact physical-valid target, no custom clamp/rejection",
+      "isolated_stale_future": "WARNING/drop current; next fresh packet usable",
+      "control_stale_replay_disconnect": "PAUSED; retain permits; authenticated fresh heartbeat/reconnect recovers",
+      "source_liveness": "arrival separate from accepted target/continuity; rejected arrivals cannot falsely imply complete loss",
+      "short_source_gap": "per-side PAUSED; fresh frame new baseline; automatic resume",
+      "complete_source_loss": "existing 1.0s HARD_FAULT after previously receiving source",
+      "hard_fault": "latched/deduplicated real malformed final/native failures",
+      "arm_hold": "independent hand forwarding"
+    },
+    "remaining_value_modifiers": [
+      "Unmodified vendor mapping/clamp_inputs",
+      "Unmodified retarget fallback/physical JOINT_LIMITS clip",
+      "Unmodified original Sharpa order/schema processing and SDK interpolation/native hardware limits"
+    ],
+    "audit": "docs/litchibot/normal_forwarding_audit.md",
+    "tests": [
+      {
+        "name": "Complete isolated ROS fake/no-send/native-mock regression",
+        "passed": 275,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199,
+        "ROS_LOCALHOST_ONLY": 1,
+        "command": "portable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot -k \"not guarded_driver and not test_cli\" -q --tb=short"
+      },
+      {
+        "name": "Qt GUI and actual TCP/normal runtime integration",
+        "passed": 13,
+        "failed": 0,
+        "command": "/tmp/gello-full-gui-tests/bin/python -m pytest apps/operator_gui -q --tb=short"
+      },
+      {
+        "name": "Host adapters/Manus/operator poses",
+        "passed": 201,
+        "failed": 0,
+        "skipped": 88,
+        "command": "/home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot adapters/pico/tests/test_manus_pipeline.py test_operator_hand_poses.py -q --tb=short"
+      }
+    ],
+    "notes": [
+      "Groups overlap; do not sum unique counts.",
+      "ROS excludes three CLI tests requiring host pinocchio (covered by host) and one direct supervised guarded-driver test using shared production lock; isolated original mock-driver integrations and strict unit regressions run.",
+      "Host skips environment-dependent ROS/Qt tests; dedicated suites run separately.",
+      "Only mock boundaries/private test locks; no physical SDK or hardware launched.",
+      "Python compileall and git diff --check passed.",
+      "Supersedes older normal severity/pattern/clamp/heartbeat hard-latch records above; historical results preserved.",
+      "One normal restart needed to load code; future recoverable events require no launcher restart."
+    ]
+  },
+  "normal_terminal2_switch_simplification": {
+    "date": "2026-10-07",
+    "architecture_retained": [
+      "NormalHandRuntime",
+      "NormalHandAuthority",
+      "BasicNormalTarget"
+    ],
+    "physical_hardware_started": false,
+    "physical_sdk_loaded": false,
+    "production_session_restarted": false,
+    "policy": {
+      "gui_states": [
+        "READY",
+        "ACTIVE",
+        "OFFLINE"
+      ],
+      "start_stop": "per-side forwarding only; no stop/disconnect/driver watchdog flag mutation",
+      "heartbeat": "diagnostic WARNING only; no permit/state changes or native stop",
+      "actual_control_loss": "OFFLINE and permits OFF; authenticated reconnect READY",
+      "source_loss": "OFFLINE affected side and permit OFF; no permanent latch even after 19s; source recovery READY",
+      "bad_packet": "NaN/Inf/shape/order/side/limits/JSON/stale/future dropped only; next good packet continues with permit",
+      "structural_failure": "real ownership/device/SDK/binding failure retains internal fault and native stop; UI OFFLINE",
+      "native_protection": "original watchdog implementation/flags preserved; no duplicate adapter stop; original enable API used on next authorized send",
+      "value_modifiers": "only original vendor mapping/fallback/physical clip and original driver/SDK/native limits"
+    },
+    "tests": [
+      {
+        "name": "Complete isolated ROS fake/no-send and original native-mock integration",
+        "passed": 283,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199,
+        "command": "portable_deps/litchi_hardware/.pixi/envs/ros2/bin/python -m pytest adapters/litchibot -k \"not guarded_driver and not test_cli\" -q --tb=short"
+      },
+      {
+        "name": "Qt GUI and real TCP, including .35s delayed normal heartbeat response",
+        "passed": 14,
+        "failed": 0,
+        "command": "/tmp/gello-full-gui-tests/bin/python -m pytest apps/operator_gui -q --tb=short"
+      },
+      {
+        "name": "Host adapters/Manus/operator poses",
+        "passed": 209,
+        "failed": 0,
+        "skipped": 88,
+        "command": "/home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot adapters/pico/tests/test_manus_pipeline.py test_operator_hand_poses.py -q --tb=short"
+      },
+      {
+        "name": "Final normal forwarding focused regression, 600 adjacent ~30Hz frames without heartbeat",
+        "passed": 32,
+        "failed": 0,
+        "command": "/home/user/miniforge3/envs/gello-upper-body-teleop/bin/python -m pytest adapters/litchibot/test_normal_forwarding.py -q --tb=short"
+      }
+    ],
+    "notes": [
+      "Groups overlap; do not sum independent counts.",
+      "ROS excludes three host-only pinocchio CLI tests (host covers) and one direct supervised test sharing production lock; isolated native-mock integrations/strict unit tests run. Host skips environment-dependent ROS/Qt cases covered separately.",
+      "Compileall and git diff --check passed.",
+      "Original Sharpa driver/SDK/vendor mapping and Manus/V4/arm/tactile/recorder/cameras unchanged.",
+      "Intermediate shutdown false HARD_FAULT logging was fixed; one ROS run saw temporary duplicate DDS ownership from prior test discovery, subsequent focused and complete suite passed without relaxing ownership checks.",
+      "Final records supersede earlier PAUSED/heartbeat lease/source-loss latch policies; history preserved."
+    ]
+  },
+  "normal_source_latest_queue_fix": {
+    "date": "2026-10-07",
+    "observed_driver_log": "/home/user/.ros/log/python_98818_1791346637092.log",
+    "observed_bridge_log": "/home/user/.ros/log/python_98820_1791346637044.log",
+    "observation": "Bridge fresh source ~30Hz age30-56ms/rejected0; driver ~20Hz callbacks repeatedly drop stale packets; depth1000 FIFO can lag permanently behind live source",
+    "change": "LitchiBot normal/full fake source subscription KEEP_LAST depth1, existing freshness0.20s unchanged; Manus/supervised keep original depths",
+    "age_logging": "Rejected packet age now included in dt field",
+    "regression": {
+      "old_behavior_reproduced": true,
+      "old_queue_consumed": 200,
+      "fixed_queue_consumed": 2,
+      "description": "100 packets per side while executor busy: 99 stale + latest fresh; only latest per side is delivered; accepted latest sequence and data_ready restored",
+      "focused_passed": 33,
+      "ROS_passed": 283,
+      "ROS_deselected": 4,
+      "host_passed": 209,
+      "host_skipped": 88,
+      "failed": 0
+    },
+    "physical_hardware_started": false,
+    "physical_sdk_loaded": false,
+    "production_process_restarted": false,
+    "production_permit_changed": false,
+    "notes": [
+      "Old behavior reproduced with test-process-only Node.create_subscription wrapper forcing depth1000; production files/processes untouched by reproduction.",
+      "Tests use ROS domain199/native mocks/private test locks.",
+      "Python compileall and git diff --check passed.",
+      "Qt14 passed in preceding unchanged GUI build; this fix changes source subscription and logging only.",
+      "Running session needs one normal restart to load subscription QoS change; real-hardware recovery not yet verified."
+    ]
+  },
+  "normal_idle_feedback_fix": {
+    "date": "2026-10-07",
+    "observed_driver_log": "/home/user/.ros/log/python_144756_1791351333731.log",
+    "observed_bridge_log": "/home/user/.ros/log/python_144758_1791351333754.log",
+    "root_cause": "Normal runtime inherited validation FullHandRuntime.idle_snapshot; failed feedback predicate directly called stop_validation; fault ~.26s after connect preceded heartbeat warning while source remained fresh30Hz",
+    "old_log_limitation": "Original idle fault omitted side/joint/value; cannot retrospectively distinguish shape/NaN/physical-range predicate",
+    "changes": [
+      "Normal overrides idle_snapshot: bad shape/nonfinite/read error only WARNING and skip telemetry",
+      "Finite measured outside command range WARNING, faithful no-send snapshot; never substituted into SDK target",
+      "ACTIVE sends already validated final target without another measured-feedback command blocker",
+      "Real structural fault GUI reason shows first cause instead of waiting-source"
+    ],
+    "preserved": [
+      "Final target NaN/Inf/22D/order/side/physical limits/freshness checks",
+      "Original Sharpa driver/SDK/vendor/native limits/device watchdog",
+      "Real disconnect/ownership/device binding/sender failure protection",
+      "Supervised/Manus original idle checks"
+    ],
+    "tests": [
+      {
+        "name": "Isolated complete ROS fake/no-send native-mock suite",
+        "passed": 289,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199
+      },
+      {
+        "name": "Qt GUI",
+        "passed": 14,
+        "failed": 0
+      },
+      {
+        "name": "Host adapters/Manus/operator poses",
+        "passed": 215,
+        "failed": 0,
+        "skipped": 88
+      },
+      {
+        "name": "Focused normal forwarding and new idle feedback regressions",
+        "passed": 38,
+        "failed": 0
+      }
+    ],
+    "physical_hardware_started": false,
+    "physical_sdk_loaded": false,
+    "production_process_restarted": false,
+    "production_hard_fault_cleared": false,
+    "notes": [
+      "Groups overlap; no unique sum.",
+      "ROS excludes host-only CLI and shared production-lock guarded test; isolated original sender integration/strict unit regressions run.",
+      "Compileall/git diff --check passed.",
+      "Existing latched process requires one normal restart to load the corrected runtime."
+    ]
+  },
+  "normal_realtime_hot_path_fix": {
+    "date": "2026-10-07",
+    "scope": "LitchiBot normal/full fake; no physical actions",
+    "architecture_retained": [
+      "NormalHandRuntime",
+      "NormalHandAuthority"
+    ],
+    "changes": [
+      "Normal extra feedback reads removed; ROS joint state cache reused by idle snapshots and diagnostic measured fields",
+      "Logging, delta serialization/file writes, supervisor ROS state and status-file writes deferred to bounded/coalesced32 diagnostics worker",
+      "Actual SDK sender and actual recorder command publication remain on original forwarding path",
+      "Normal client knows mode before first heartbeat response; delayed first response does not abort TCP",
+      "Latest source target KEEP_LAST1 retained",
+      "Diagnostic submission failure counted, never converted into a motion fault; first structural HARD root protected from queue eviction"
+    ],
+    "prohibited_motion_changes_added": false,
+    "startup_blend": false,
+    "alignment": false,
+    "relative_offset": false,
+    "slew_or_speed_clamp": false,
+    "target_current_gate": false,
+    "mapping_modified": false,
+    "native_timeout_s": 0.2,
+    "native_timeout_modified": false,
+    "physical_sdk_loaded": false,
+    "physical_hardware_started": false,
+    "production_session_restarted": false,
+    "metrics_artifact": "docs/litchibot/normal_realtime_metrics.json",
+    "sustained_mock_metrics": {
+      "duration_s": 60.000030027998946,
+      "source_hz": {
+        "left": 29.99998498600804,
+        "right": 29.99998498600804
+      },
+      "forwarding_hz": {
+        "left": 29.99998498600804,
+        "right": 29.99998498600804
+      },
+      "command_interval": {
+        "left": {
+          "mean_ms": 33.33253035630957,
+          "p95_ms": 33.42273069938528,
+          "max_ms": 35.13800899963826,
+          "samples": 1799
+        },
+        "right": {
+          "mean_ms": 33.33260776153409,
+          "p95_ms": 33.47405499898741,
+          "max_ms": 34.998786000869586,
+          "samples": 1799
+        }
+      },
+      "callback_processing": {
+        "mean_ms": 0.157236986103707,
+        "p95_ms": 0.2748004003478852,
+        "max_ms": 0.5177880011615343,
+        "samples": 3602
+      },
+      "heartbeat_rtt": {
+        "mean_ms": 9.915737367029578,
+        "p95_ms": 10.106566399281292,
+        "max_ms": 12.532012999145081,
+        "samples": 1000
+      },
+      "target_packet_age": {
+        "mean_ms": 0.2827793306570472,
+        "p95_ms": 0.5488689997946494,
+        "max_ms": 1.2578149999171728,
+        "samples": 3602
+      },
+      "native_command_timeouts": 0,
+      "supervisor_disconnects": 0,
+      "diagnostic_queue_depth": 3,
+      "sdk_feedback_reads_by_normal_adapter": 0,
+      "physical_sdk_loads": 0,
+      "slow_diagnostics": {
+        "logger_ms": 150,
+        "statistics_write_ms": 300,
+        "status_disk_ms": 250
+      },
+      "sdk": "original mock sender; physical SDK prohibited",
+      "ROS_DOMAIN_ID": "198"
+    },
+    "tests": [
+      {
+        "name": "Complete isolated ROS fake/no-send/native-mock regression",
+        "passed": 292,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199
+      },
+      {
+        "name": "Qt GUI including delayed first response",
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "name": "Host adapters/Manus/operator poses",
+        "passed": 217,
+        "failed": 0,
+        "skipped": 89
+      },
+      {
+        "name": "Final normal focused and diagnostics failure/coalescing protection",
+        "passed": 41,
+        "failed": 0
+      },
+      {
+        "name": "Sustained60s actualDDS/originalmock/TCP with slow diagnostics",
+        "passed": 1,
+        "failed": 0,
+        "ROS_DOMAIN_ID": 198
+      }
+    ],
+    "notes": [
+      "Groups overlap; do not sum unique counts.",
+      "Final extra telemetry submission-failure case ran in focused41 suite after complete292/217 suites.",
+      "ROS excludes three host-only CLI and one shared production lock guarded test; host skips ROS-dependent tests; original isolated native-mock and supervised strict checks pass.",
+      "Synthetic30Hz source metrics do not include physical glove/V3.5/USB/SDK latency.",
+      "Real hardware must not be inferred accepted from mock timing.",
+      "No pose blending/alignment/current-target gating or new motion thresholds; first absolute target remains unchanged.",
+      "Compileall and git diff --check passed; running process needs one normal restart to load code."
+    ]
+  },
+  "normal_async_native_reenable": {
+    "date": "2026-10-07",
+    "scope": "LitchiBot normal/full fake only; existing normal architecture retained",
+    "changes": [
+      "One persistent enable worker per side; at most one RUNNING operation",
+      "Needs-enable source frame starts background task and returns without sending; RUNNING/FAILED frames update only latest target",
+      "Success never replays trigger/waiting target; next accepted source frame sends current target through original sender",
+      "Stop while enable running retains permit OFF; task completion cannot send target",
+      "Failure per-side OFFLINE, no global latch and no per-frame retry; explicit Stop/Start retries on same worker",
+      "Retryable enable error leaves existing GUI Stop/Start switch usable",
+      "Original disconnect waits for native task completion; true hard-stop guard prevents late enable from undoing stop"
+    ],
+    "unchanged": [
+      "heartbeat behavior",
+      "partial-valid/fallback policy",
+      "source freshness0.20s",
+      "mapping/retarget",
+      "motion values/no added clamp/gate/blend/offset",
+      "original Sharpa driver/SDK/native watchdog timeout/protections",
+      "Manus/supervised strategies"
+    ],
+    "physical_hardware_started": false,
+    "physical_sdk_loaded": false,
+    "production_session_restarted": false,
+    "latest_target_storage": "raw.previous: one accepted target/anchor per side; worker stores no target",
+    "metrics_artifact": "docs/litchibot/normal_async_reenable_metrics.json",
+    "one_second_enable_mock_metrics": {
+      "duration_s": 6.003154530999382,
+      "source_hz": {
+        "left": 29.984235633200385,
+        "right": 29.984235633200385
+      },
+      "forwarding_hz": {
+        "left": 24.820283940815873,
+        "right": 29.984235633200385
+      },
+      "command_interval": {
+        "left": {
+          "mean_ms": 40.31502930404934,
+          "p95_ms": 33.40733889890544,
+          "max_ms": 1066.6744190002646,
+          "samples": 148
+        },
+        "right": {
+          "mean_ms": 33.33290548603374,
+          "p95_ms": 33.46141129914031,
+          "max_ms": 33.578013000806095,
+          "samples": 179
+        }
+      },
+      "callback_processing": {
+        "mean_ms": 0.1533304088579273,
+        "p95_ms": 0.2185954484048125,
+        "max_ms": 0.2895859997806838,
+        "samples": 362
+      },
+      "heartbeat_rtt": {
+        "mean_ms": 9.928116499941098,
+        "p95_ms": 10.06668804839137,
+        "max_ms": 10.154257999602123,
+        "samples": 100
+      },
+      "target_packet_age": {
+        "mean_ms": 0.2936670993754556,
+        "p95_ms": 0.5064940505690174,
+        "max_ms": 1.4104170004429761,
+        "samples": 362
+      },
+      "native_command_timeouts": 0,
+      "supervisor_disconnects": 0,
+      "diagnostic_queue_depth": 2,
+      "sdk_feedback_reads_by_normal_adapter": 0,
+      "physical_sdk_loads": 0,
+      "slow_diagnostics": {
+        "logger_ms": 150,
+        "statistics_write_ms": 300,
+        "status_disk_ms": 250
+      },
+      "native_enable_duration_s": 1.0002628050006024,
+      "native_enable_attempts": 1,
+      "sdk": "original mock sender; physical SDK prohibited",
+      "ROS_DOMAIN_ID": "198"
+    },
+    "tests": [
+      {
+        "name": "Complete isolated ROS fake/no-send/native mock regression",
+        "passed": 297,
+        "failed": 0,
+        "deselected": 4,
+        "ROS_DOMAIN_ID": 199
+      },
+      {
+        "name": "Final async per-side success/Stop/failure and late hard-stop race",
+        "passed": 4,
+        "failed": 0,
+        "ROS_DOMAIN_ID": 197
+      },
+      {
+        "name": "Qt operator GUI suite",
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "name": "Host adapter/Manus/operator poses",
+        "passed": 218,
+        "failed": 0,
+        "skipped": 93
+      },
+      {
+        "name": "Real DDS/TCP with1s blocked background enable and slow telemetry",
+        "passed": 1,
+        "failed": 0,
+        "ROS_DOMAIN_ID": 198
+      }
+    ],
+    "notes": [
+      "Groups overlap; not a unique total.",
+      "Final late-enable hard-stop guard was added after complete297 suite and verified in final4 focused native tests.",
+      "ROS excludes host-only CLI and shared production-lock guarded test; private mock sender/SDK bindings and domain197/198/199 used.",
+      "1s enable interval intentionally has no SDK commands on that side; unaffected side remains30Hz and heartbeat RTT max10.154ms, callback max.290ms.",
+      "One-second enable reported only one attempt; source continues30Hz and no native timeout/disconnect caused by blocked callback.",
+      "Synthetic-source/mock SDK timing does not establish physical vendor SDK thread/GIL behavior.",
+      "Python compileall/git diff --check passed; existing process requires one normal restart to load code."
+    ]
+  },
+  "normal_terminal2_lifecycle_restore": {
+    "normal_litchibot_command_timeout_s": 0.0,
+    "validation_and_full_manus_command_timeout_s": 0.2,
+    "normal_async_reenable_selected": false,
+    "stop_wait_s": 0.35,
+    "stop_calls_before_shutdown": 0,
+    "ensure_enabled_calls_on_restart": 0,
+    "shutdown_stop_and_disconnect_calls_per_side": 1,
+    "ros_regression": {
+      "passed": 299,
+      "deselected": 4
+    },
+    "host_regression": {
+      "passed": 218,
+      "skipped": 95
+    },
+    "gui_regression": {
+      "passed": 15
+    },
+    "final_lifecycle_and_realtime": {
+      "passed": 7
+    },
+    "realtime_metrics": "normal_session_lifecycle_metrics.json",
+    "physical_sdk_loads": 0
+  },
+  "gui_close_full_session_shutdown": {
+    "transport": "session-token authenticated private Unix datagram, independent of hand TCP/heartbeat",
+    "order": "GUI close -> FullLauncher.close -> hand wrapper SIGINT / original driver shutdown -> arm wrapper cleanup",
+    "wrong_token_rejected": true,
+    "hands_stub_cleanup_before_slow_arm_cleanup": true,
+    "gui_close_without_supervisor_connection": true,
+    "ros_regression": {
+      "passed": 300,
+      "deselected": 4
+    },
+    "host_regression": {
+      "passed": 219,
+      "skipped": 95
+    },
+    "gui_regression": {
+      "passed": 16
+    },
+    "physical_hardware_started": false
+  },
+  "terminal_hangup_shutdown": {
+    "signals": [
+      "SIGINT",
+      "SIGTERM",
+      "SIGHUP"
+    ],
+    "real_controlling_pty_master_close_passed": true,
+    "independent_sets_id_workers_reclaimed": true,
+    "normal_original_mock_stop_and_disconnect_per_side": 1,
+    "normal_command_timeout_s": 0.0,
+    "ros_regression": {
+      "passed": 304,
+      "deselected": 4
+    },
+    "host_regression": {
+      "passed": 222,
+      "skipped": 96
+    },
+    "physical_device_actions": false
+  },
+  "normal_native_shutdown_with_blocked_feedback": {
+    "field_evidence": "ROS launch SIGINT 5s + SIGTERM 10s then validation_driver SIGKILL -9",
+    "exit_channel": "private authenticated Unix datagram independent of ROS executor",
+    "two_side_disable_before_disconnect": true,
+    "native_enable_readback_required": true,
+    "blocked_ros_feedback_mock_cleanup_passed": true,
+    "blocked_one_side_disconnect_opposite_disable_passed": true,
+    "failed_native_disable_reported_as_failure": true,
+    "launcher_waits_for_verified_cleanup": true,
+    "ros_regression": {
+      "passed": 310,
+      "deselected": 4
+    },
+    "host_regression": {
+      "passed": 227,
+      "skipped": 97
+    },
+    "normal_command_timeout_s": 0.0,
+    "physical_sdk_tested": false
+  }
+}

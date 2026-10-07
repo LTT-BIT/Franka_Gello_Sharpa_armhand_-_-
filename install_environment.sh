@@ -12,7 +12,7 @@ CONDA_ENV="${TELEOP_CONDA_ENV:-gello-upper-body-teleop}"
 
 usage() {
   cat <<'EOF'
-用法：./install_environment.sh [选项]
+用法：./一键安装环境.sh [选项]
 
 直接在复制到新电脑的 gello_upper_body_teleop 目录中执行本脚本。
 
@@ -206,7 +206,19 @@ done
   cd "$LITCHI_REPO"
   pixi install -e ros2
   pixi install -e retarget-v4
-  pixi run stage-retarget-v4
+  if [[ -f reference/sharpa-manus-sdk/retargeting_alg_release_V4.0/include/hand_kinematic_casadi.so ]]; then
+    pixi run -e ros2 stage-retarget-v4
+  else
+    # Portable deployments already contain the licensed staged binaries.
+    # Do not run --clean when their original vendor reference was omitted.
+    for asset in \
+      manus_sharpa_teleop/manus_sharpa_teleop/vendor/retarget_v4/include/hand_kinematic_casadi.so \
+      manus_sharpa_teleop/manus_sharpa_teleop/vendor/retarget_v4/include/hand_retargeting_optimizer.so \
+      manus_sharpa_teleop/sharpa_wave_description/urdf/left_sharpa_wave/left_sharpa_wave.urdf \
+      manus_sharpa_teleop/sharpa_wave_description/urdf/right_sharpa_wave/right_sharpa_wave.urdf; do
+      [[ -f "ros2/src/$asset" ]] || { echo "Missing staged V4 asset: $asset" >&2; exit 1; }
+    done
+  fi
   pixi run -e ros2 ros-build
 )
 

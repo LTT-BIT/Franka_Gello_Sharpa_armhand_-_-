@@ -15,13 +15,14 @@ import argparse
 import json
 import sys
 import time
+import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal, QEvent
 from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
@@ -164,6 +165,9 @@ class OperatorWindow(QMainWindow):
         collection_port: int | None = None,
     ) -> None:
         super().__init__()
+        self.hand_client=None;self.hand_status={};self.hand_events=[];self.full_config=None
+        if os.environ.get('TELEOP_FULL_CONFIG'):
+            self.full_config=json.loads(Path(os.environ['TELEOP_FULL_CONFIG']).read_text())
         self.settings = QSettings("HSC", "FrankaUpperBodyTeleop")
         self.host = host or str(self.settings.value("host", "127.0.0.1"))
         self.port = int(
@@ -225,6 +229,15 @@ class OperatorWindow(QMainWindow):
         self._set_connection_state("disconnected", "backend is not connected")
         self._connect()
         self._connect_collection()
+        if self.full_config:
+            from apps.operator_gui.hand_client import HandClient
+            self.hand_client=HandClient(self.full_config['control_port'],self.full_config['token'],self,
+                normal_forwarding=self.full_config.get('source')=='litchibot' and self.full_config.get('mode') in ('normal','fake'))
+            self.hand_client.status.connect(self._apply_hand_status)
+            self.hand_client.event.connect(self._hand_event)
+            if self.full_config['mode']=='supervised_hardware_validation':
+                QApplication.instance().installEventFilter(self)
+            self._apply_hand_status({'hands':{s:{'state':'OFFLINE','permit':False} for s in SIDES}})
 
     # ------------------------------------------------------------------ ui
     def _build_ui(self) -> None:
@@ -364,6 +377,7 @@ class OperatorWindow(QMainWindow):
 
         actions = QHBoxLayout()
         disengage_all = self._button("DISENGAGE ALL", "disengage_all")
+        self.disengage_all_button=disengage_all
         disengage_all.setMinimumHeight(64)
         disengage_all.setStyleSheet(
             "background-color: #a83232; color: white; font-weight: bold;"
@@ -734,12 +748,14 @@ class OperatorWindow(QMainWindow):
         for button in getattr(self, "capture_home_buttons", {}).values():
             button.setEnabled(ready)
         for side, button in self.hand_engage_buttons.items():
+            if self.hand_client is not None:continue
             button.setEnabled(ready)
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
                 button.setText("Start hand")
                 button.blockSignals(False)
+        if self.hand_client is not None:self._apply_hand_status(self.hand_status)
         self.connect_action.setEnabled(state != "connected")
         self.task_selector.setEnabled(ready)
         if state == "disconnected":
@@ -794,6 +810,12 @@ class OperatorWindow(QMainWindow):
         )
 
     def _send(self, command: str, arguments=None) -> None:
+        if self.hand_client:
+            if command in ('engage_hand','disengage_hand','open_hand'):
+                self.hand_client.request(command,arguments)
+                self._apply_hand_status(self.hand_status)
+                return
+            if command=='disengage_all':self.hand_client.request('disengage_all')
         if self.socket.state() != QAbstractSocket.ConnectedState:
             return
         request_id = self.next_request_id
@@ -1045,6 +1067,10 @@ class OperatorWindow(QMainWindow):
             self._open_quality_dialog()
 
     def closeEvent(self, event) -> None:
+        if self.full_config:
+            from teleop_runtime.full_launcher import notify_gui_session_exit
+            notify_gui_session_exit(self.full_config['token'])
+        if self.hand_client:self.hand_client.close()
         for timer in (
             self.poll_timer,
             self.health_timer,
@@ -1089,6 +1115,7 @@ class OperatorWindow(QMainWindow):
             button.blockSignals(False)
         hand_active = status.get("hand_active", {})
         for side, button in self.hand_engage_buttons.items():
+            if self.hand_client:continue
             engaged = bool(hand_active.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
@@ -1113,11 +1140,48 @@ class OperatorWindow(QMainWindow):
         feedback = status.get("feedback", [])
         # Re-render the ring wholesale: the server caps it at 50 lines, so
         # replacing the text is the simplest correct display.
+        if self.hand_client:feedback=list(feedback)+self.hand_events[-50:]
         if feedback and self.feedback.toPlainText().splitlines() != feedback:
             self.feedback.setPlainText("\n".join(feedback))
             self.feedback.verticalScrollBar().setValue(
                 self.feedback.verticalScrollBar().maximum()
             )
+
+    def _hand_event(self,text):
+        if not self.hand_events or self.hand_events[-1]!=text:
+            self.hand_events.append(text);self.feedback.appendPlainText(text)
+
+    def _apply_hand_status(self,status):
+        previous=self.hand_status
+        old_reason=previous.get('reason');self.hand_status=status
+        if status.get('reason') and status.get('reason')!=old_reason:self._hand_event(status['reason'])
+        for side,button in self.hand_engage_buttons.items():
+            data=status.get('hands',{}).get(side,{})
+            state=data.get('state','OFFLINE');permit=bool(data.get('permit'))
+            old_data=previous.get('hands',{}).get(side,{})
+            if data.get('reason') and (data.get('reason'),state)!=(old_data.get('reason'),old_data.get('state')):
+                self._hand_event(f'{side}: {state}: '+data['reason'])
+            button.blockSignals(True);button.setChecked(permit)
+            button.setText(('Stop hand' if permit else 'Start hand')+f' [{state}]')
+            button.setEnabled((state not in ('FAULT','HARD_FAULT','OFFLINE','RECOVERING')) and (state!='SOFT_HOLD' or permit))
+            button.setToolTip('Supervisor state: '+state+' | '+str(data.get('reason') or status.get('reason','')))
+            button.blockSignals(False)
+        if self.full_config and self.full_config['mode']=='supervised_hardware_validation':
+            self.statusBar().showMessage('Validation: hold F12 to run; release/focus loss latches STOP')
+        self.disengage_all_button.setEnabled(self.connection_state=='connected' or any(
+            d.get('state')!='OFFLINE' for d in status.get('hands',{}).values()))
+
+    def eventFilter(self,watched,event):
+        if self.hand_client and self.full_config and self.full_config['mode']=='supervised_hardware_validation':
+            if event.type() in (QEvent.KeyPress,QEvent.KeyRelease) and event.key()==Qt.Key_F12:
+                if not event.isAutoRepeat():
+                    self.hand_client.held=event.type()==QEvent.KeyPress
+                    self.hand_client.request('heartbeat',{'hold':self.hand_client.held})
+                return True
+            if event.type()==QEvent.WindowDeactivate:
+                self.hand_client.held=False
+                self.hand_client.request('heartbeat',{'hold':False})
+        return super().eventFilter(watched,event)
 
 
 def main() -> int:

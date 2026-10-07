@@ -1,0 +1,6 @@
+{
+  "ops/run/run_gello_arms_only.sh": "5e63b1ef47045785f4c0a0cf7f3656b6dd089ee59eb7bf1c1cdb4e80b682f398",
+  "ops/run/run_sharpa_hands_cyclonedds.sh": "8e88dfe63f197639f31f3ef76b8ece82f9d0d71f82b0d7b47424597ff7ae860d",
+  "ops/run/run_operator.sh": "4146c333e02a42ed347b43e9459e98f626bbd500b8cb1aa51173b360fd45f985",
+  "ops/run/start_sharpa_arm_recording_with_tactile.sh": "9849964cefe821111da52e8844507c5ea9f78b2b45908effbad8ae870679b729"
+}

@@ -1,0 +1,15 @@
+{
+  "mode": "supervised_hardware_validation",
+  "operator": "",
+  "sop_reference": "",
+  "adult_qualified_operator": false,
+  "sop_reviewed": false,
+  "physical_estop_checked": false,
+  "workspace_clear": false,
+  "known_pinky_risk_acknowledged": false,
+  "connect_auto_enable_acknowledged": false,
+  "expires_unix_s": 0,
+  "session_token": "",
+  "serials": {"left": "", "right": ""},
+  "profile": "LYG226360006"
+}

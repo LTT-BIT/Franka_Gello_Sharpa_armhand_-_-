@@ -23,3 +23,16 @@ deployment_env_default() {
   value="$(deployment_env_value "$env_file" "$key")"
   printf '%s\n' "${value:-$fallback}"
 }
+
+# Headless LitchiBot uses a separate CPython 3.10 runtime. Read only these
+# deployment keys; an explicitly exported value still takes precedence.
+deployment_export_litchibot_env() {
+  local env_file=$1
+  local key value
+  for key in LITCHIBOT_PYTHON LITCHIBOT_SDK_ROOT LITCHIBOT_DATA_DIR; do
+    if [[ -z "${!key:-}" ]]; then
+      value="$(deployment_env_value "$env_file" "$key")"
+      [[ -z "$value" ]] || export "$key=$value"
+    fi
+  done
+}

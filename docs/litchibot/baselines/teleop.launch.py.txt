@@ -1,0 +1,186 @@
+"""Launch the real or fake dual-hand Manus-to-Sharpa pipeline."""
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description() -> LaunchDescription:
+    use_fake = LaunchConfiguration("use_fake_hardware")
+    enable_left = LaunchConfiguration("enable_left")
+    enable_right = LaunchConfiguration("enable_right")
+
+    arguments = [
+        DeclareLaunchArgument(
+            "use_fake_hardware",
+            default_value="false",
+            description="Use in-process fake Manus and Sharpa devices.",
+        ),
+        DeclareLaunchArgument("enable_left", default_value="true"),
+        DeclareLaunchArgument("enable_right", default_value="true"),
+        DeclareLaunchArgument(
+            "manus_backend",
+            default_value="native",
+            description="Manus backend: native (in-process SDK) or zmq.",
+        ),
+        DeclareLaunchArgument(
+            "manus_endpoint", default_value="tcp://127.0.0.1:2044"
+        ),
+        DeclareLaunchArgument(
+            "manus_manage_client",
+            default_value="true",
+            description="Start and supervise a client for the ZMQ backend.",
+        ),
+        DeclareLaunchArgument(
+            "manus_client_executable",
+            default_value=EnvironmentVariable(
+                "MANUS_CLIENT_EXECUTABLE", default_value=""
+            ),
+            description="Optional vendor Manus client to start and supervise.",
+        ),
+        DeclareLaunchArgument(
+            "manus_client_working_directory",
+            default_value=EnvironmentVariable(
+                "MANUS_CLIENT_WORKING_DIRECTORY", default_value=""
+            ),
+            description="Directory containing ManusSDK libraries and calibration files.",
+        ),
+        DeclareLaunchArgument(
+            "manus_native_library",
+            default_value="",
+            description="Optional override for liblitchi_manus_bridge.so.",
+        ),
+        DeclareLaunchArgument(
+            "manus_calibration_directory",
+            default_value="",
+            description="Optional directory containing the Manus .mcal files.",
+        ),
+        DeclareLaunchArgument(
+            "manus_native_host_discovery_s", default_value="1"
+        ),
+        DeclareLaunchArgument(
+            "manus_native_loopback_only", default_value="false"
+        ),
+        DeclareLaunchArgument("left_sharpa_serial", default_value=""),
+        DeclareLaunchArgument("right_sharpa_serial", default_value=""),
+        DeclareLaunchArgument("publish_rate_hz", default_value="60.0"),
+        DeclareLaunchArgument("state_rate_hz", default_value="30.0"),
+        DeclareLaunchArgument("publish_tactile", default_value="true"),
+        DeclareLaunchArgument("tactile_poll_rate_hz", default_value="60.0"),
+        DeclareLaunchArgument(
+            "retarget_backend",
+            default_value="v4",
+            description="Retargeter: vendor V4 optimizer or analytic fallback.",
+        ),
+        DeclareLaunchArgument("smoothing_alpha", default_value="0.35"),
+        DeclareLaunchArgument("flexion_scale", default_value="1.0"),
+        DeclareLaunchArgument("abduction_scale", default_value="1.0"),
+        DeclareLaunchArgument("v4_filter_alpha", default_value="1.0"),
+        DeclareLaunchArgument(
+            "v4_worker_python",
+            default_value=EnvironmentVariable(
+                "LITCHI_RETARGET_V4_PYTHON", default_value=""
+            ),
+            description="Python 3.10 executable for the vendor V4 optimizer.",
+        ),
+        DeclareLaunchArgument("max_input_age_s", default_value="0.25"),
+        DeclareLaunchArgument("speed_coefficient", default_value="0.3"),
+        DeclareLaunchArgument("current_coefficient", default_value="0.6"),
+        DeclareLaunchArgument(
+            "stop_on_command_timeout_s",
+            default_value="0.0",
+            description="Stop Sharpa if retarget commands cease; zero disables.",
+        ),
+    ]
+
+    manus = Node(
+        package="manus_driver",
+        executable="manus_driver",
+        name="manus_driver",
+        output="screen",
+        parameters=[
+            {
+                "use_fake_hardware": use_fake,
+                "backend": LaunchConfiguration("manus_backend"),
+                "endpoint": LaunchConfiguration("manus_endpoint"),
+                "manage_client": LaunchConfiguration("manus_manage_client"),
+                "client_executable": LaunchConfiguration(
+                    "manus_client_executable"
+                ),
+                "client_working_directory": LaunchConfiguration(
+                    "manus_client_working_directory"
+                ),
+                "native_library": LaunchConfiguration("manus_native_library"),
+                "native_host_discovery_s": LaunchConfiguration(
+                    "manus_native_host_discovery_s"
+                ),
+                "native_loopback_only": LaunchConfiguration(
+                    "manus_native_loopback_only"
+                ),
+                "calibration_directory": LaunchConfiguration(
+                    "manus_calibration_directory"
+                ),
+                "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
+                "publish_left": enable_left,
+                "publish_right": enable_right,
+            }
+        ],
+    )
+
+    retarget = Node(
+        package="manus_sharpa_teleop",
+        executable="retarget_node",
+        name="manus_sharpa_retarget",
+        output="screen",
+        parameters=[
+            {
+                "enable_left": enable_left,
+                "enable_right": enable_right,
+                "backend": LaunchConfiguration("retarget_backend"),
+                "smoothing_alpha": LaunchConfiguration("smoothing_alpha"),
+                "flexion_scale": LaunchConfiguration("flexion_scale"),
+                "abduction_scale": LaunchConfiguration("abduction_scale"),
+                "v4_filter_alpha": LaunchConfiguration("v4_filter_alpha"),
+                "v4_worker_python": LaunchConfiguration("v4_worker_python"),
+                "max_input_age_s": LaunchConfiguration("max_input_age_s"),
+            }
+        ],
+    )
+
+    sharpa = Node(
+        package="sharpa_driver",
+        executable="sharpa_driver",
+        name="sharpa_driver",
+        output="screen",
+        parameters=[
+            {
+                "use_fake_hardware": use_fake,
+                "enable_left": enable_left,
+                "enable_right": enable_right,
+                "left_serial": LaunchConfiguration("left_sharpa_serial"),
+                "right_serial": LaunchConfiguration("right_sharpa_serial"),
+                "state_rate_hz": LaunchConfiguration("state_rate_hz"),
+                "publish_tactile": LaunchConfiguration("publish_tactile"),
+                "tactile_poll_rate_hz": LaunchConfiguration(
+                    "tactile_poll_rate_hz"
+                ),
+                "speed_coefficient": LaunchConfiguration("speed_coefficient"),
+                "current_coefficient": LaunchConfiguration(
+                    "current_coefficient"
+                ),
+                "stop_on_command_timeout_s": LaunchConfiguration(
+                    "stop_on_command_timeout_s"
+                ),
+            }
+        ],
+    )
+
+    return LaunchDescription(
+        [
+            *arguments,
+            manus,
+            retarget,
+            sharpa,
+        ]
+    )

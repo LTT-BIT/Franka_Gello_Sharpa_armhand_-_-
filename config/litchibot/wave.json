@@ -1,0 +1,621 @@
+{
+  "version": "1.0",
+  "manufacturer": "Sharpa",
+  "hand_joint": "Wave",
+  "description": "11-IMU absolute joint-position retargeting for Sharpa Wave. Finger MCP/root flexion joints are driven only by independent root IMUs; distal joints remain driven by tip-derived PIP/DIP flex.",
+  "output": {
+    "kind": "float_joint_positions"
+  },
+  "clamp_inputs": true,
+  "_input_pose": "V3: dexterous_cmc_yaw/swing are robot-only legacy-axis radians from dexterous_hand_cmc_mapping.json, before display gains/limits. Other joints use kinematic_hand_pose_mapping.json. CMC actuator rules start from the legacy-axis baseline; tune these rules for the robot.",
+  "joint_names": [
+    "thumb_CMC_FE",
+    "thumb_CMC_AA",
+    "thumb_MCP_FE",
+    "thumb_MCP_AA",
+    "thumb_IP",
+    "index_MCP_FE",
+    "index_MCP_AA",
+    "index_PIP",
+    "index_DIP",
+    "middle_MCP_FE",
+    "middle_MCP_AA",
+    "middle_PIP",
+    "middle_DIP",
+    "ring_MCP_FE",
+    "ring_MCP_AA",
+    "ring_PIP",
+    "ring_DIP",
+    "pinky_CMC",
+    "pinky_MCP_FE",
+    "pinky_MCP_AA",
+    "pinky_PIP",
+    "pinky_DIP"
+  ],
+  "initial_values": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "sides": {
+    "default": {
+      "joints": {
+        "thumb_CMC_FE": {
+          "sources": {
+            "dexterous_cmc_yaw": 2.5
+          },
+          "input_range_deg": [
+            8.6,
+            92.8
+          ],
+          "output_range": [
+            0.0,
+            1.9199
+          ]
+        },
+        "thumb_CMC_AA": {
+          "sources": {
+            "dexterous_cmc_swing": 1.0
+          },
+          "input_range_deg": [
+            0,
+            35
+          ],
+          "output_range": [
+            0.0,
+            0.25
+          ]
+        },
+        "thumb_MCP_FE": {
+          "sources": {
+            "thumb_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0.0,
+            80.21409131831524
+          ],
+          "output_range": [
+            0.0,
+            0.9
+          ]
+        },
+        "thumb_MCP_AA": {
+          "fixed_value": 0.0
+        },
+        "thumb_IP": {
+          "sources": {
+            "thumb_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0.0,
+            69.90085100596043
+          ],
+          "output_range": [
+            0.0,
+            1.1
+          ]
+        },
+        "index_MCP_FE": {
+          "sources": {
+            "index_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "index_MCP_AA": {
+          "sources": {
+            "index_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.22,
+            -0.22
+          ]
+        },
+        "index_PIP": {
+          "sources": {
+            "index_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "index_DIP": {
+          "sources": {
+            "index_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "middle_MCP_FE": {
+          "sources": {
+            "middle_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "middle_MCP_AA": {
+          "sources": {
+            "middle_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.18,
+            -0.18
+          ]
+        },
+        "middle_PIP": {
+          "sources": {
+            "middle_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "middle_DIP": {
+          "sources": {
+            "middle_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "ring_MCP_FE": {
+          "sources": {
+            "ring_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "ring_MCP_AA": {
+          "sources": {
+            "ring_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.18,
+            -0.18
+          ]
+        },
+        "ring_PIP": {
+          "sources": {
+            "ring_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "ring_DIP": {
+          "sources": {
+            "ring_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "pinky_CMC": {
+          "sources": {
+            "pinky_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.0,
+            0.2618
+          ]
+        },
+        "pinky_MCP_FE": {
+          "sources": {
+            "pinky_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "pinky_MCP_AA": {
+          "sources": {
+            "pinky_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.22,
+            -0.22
+          ]
+        },
+        "pinky_PIP": {
+          "sources": {
+            "pinky_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "pinky_DIP": {
+          "sources": {
+            "pinky_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        }
+      }
+    },
+    "left": {
+      "joints": {
+        "thumb_CMC_FE": {
+          "sources": {
+            "dexterous_cmc_yaw": 2.5
+          },
+          "input_range_deg": [
+            8.6,
+            92.8
+          ],
+          "output_range": [
+            0.0,
+            1.9199
+          ]
+        },
+        "thumb_CMC_AA": {
+          "sources": {
+            "dexterous_cmc_swing": 1.0
+          },
+          "input_range_deg": [
+            0,
+            35
+          ],
+          "output_range": [
+            0.0,
+            0.25
+          ]
+        },
+        "thumb_MCP_FE": {
+          "sources": {
+            "thumb_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0.0,
+            80.21409131831524
+          ],
+          "output_range": [
+            0.0,
+            0.9
+          ]
+        },
+        "thumb_MCP_AA": {
+          "fixed_value": 0.0
+        },
+        "thumb_IP": {
+          "sources": {
+            "thumb_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0.0,
+            69.90085100596043
+          ],
+          "output_range": [
+            0.0,
+            1.1
+          ]
+        },
+        "index_MCP_FE": {
+          "sources": {
+            "index_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "index_MCP_AA": {
+          "sources": {
+            "index_mcp_swing": 1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.22,
+            -0.22
+          ]
+        },
+        "index_PIP": {
+          "sources": {
+            "index_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "index_DIP": {
+          "sources": {
+            "index_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "middle_MCP_FE": {
+          "sources": {
+            "middle_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "middle_MCP_AA": {
+          "sources": {
+            "middle_mcp_swing": 1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.18,
+            -0.18
+          ]
+        },
+        "middle_PIP": {
+          "sources": {
+            "middle_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "middle_DIP": {
+          "sources": {
+            "middle_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "ring_MCP_FE": {
+          "sources": {
+            "ring_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "ring_MCP_AA": {
+          "sources": {
+            "ring_mcp_swing": 1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.18,
+            -0.18
+          ]
+        },
+        "ring_PIP": {
+          "sources": {
+            "ring_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "ring_DIP": {
+          "sources": {
+            "ring_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        },
+        "pinky_CMC": {
+          "sources": {
+            "pinky_mcp_swing": -1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.0,
+            0.2618
+          ]
+        },
+        "pinky_MCP_FE": {
+          "sources": {
+            "pinky_mcp_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            75
+          ],
+          "output_range": [
+            0.0,
+            1.5708
+          ]
+        },
+        "pinky_MCP_AA": {
+          "sources": {
+            "pinky_mcp_swing": 1.0
+          },
+          "input_range_deg": [
+            -20,
+            20
+          ],
+          "output_range": [
+            0.22,
+            -0.22
+          ]
+        },
+        "pinky_PIP": {
+          "sources": {
+            "pinky_pip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            95
+          ],
+          "output_range": [
+            0.0,
+            1.7453
+          ]
+        },
+        "pinky_DIP": {
+          "sources": {
+            "pinky_dip_flex": 1.0
+          },
+          "input_range_deg": [
+            0,
+            80
+          ],
+          "output_range": [
+            0.0,
+            1.3963
+          ]
+        }
+      }
+    }
+  }
+}

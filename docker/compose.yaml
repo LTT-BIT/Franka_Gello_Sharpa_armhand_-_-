@@ -318,18 +318,18 @@ services:
     <<: *runtime
     stop_signal: SIGINT
     stop_grace_period: 30s
+    # The project workspace also contains an Orbbec package for the separate
+    # three-camera collector. Prefer the patched vendor driver for this service.
     command:
-      - ros2
-      - launch
-      - orbbec_camera
-      - gemini435_le.launch.py
-      - enumerate_net_device:=false
-      - net_device_ip:=192.168.1.123
-      - net_device_port:=8090
-      - connection_delay:=1
-      - device_access_mode:=mr
-      - enable_point_cloud:=false
-      - enable_colored_point_cloud:=false
+      - bash
+      - -lc
+      - >-
+        unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH LD_LIBRARY_PATH
+        PYTHONPATH CMAKE_PREFIX_PATH &&
+        source /opt/ros/humble/setup.bash &&
+        source /opt/vendor_ws/install/setup.bash &&
+        exec ros2 launch
+        /workspace/franka_upper_body_teleop/ops/diagnostics/single_orbbec_network.launch.py
 
   tools:
     <<: *runtime

@@ -1,0 +1,3 @@
+# LitchiBot STM32 USB receiver. Grant access to plugdev members and the
+# logged-in local desktop user; do not grant access to unrelated USB devices.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="5750", MODE="0660", GROUP="plugdev", TAG+="uaccess"
