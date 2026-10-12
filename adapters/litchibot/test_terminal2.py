@@ -61,6 +61,28 @@ def test_wrapper_manus_default_explicit_and_original_have_same_exec(tmp_path):
     assert blocked.returncode==2 and 'BLOCKER FOR REAL HARDWARE MOTION' in blocked.stderr
 
 
+    # Deployment overrides must reach both ordinary and managed Manus startup,
+    # while explicit arguments and LitchiBot retain their own configuration.
+    bridge=root/'manus.so';bridge.write_bytes(b'fixture')
+    calibration=root/'manus-calibration';calibration.mkdir()
+    for side in ('left','right'):
+        (calibration/f'Calibration_{side}.mcal').write_bytes(b'fixture')
+    with (root/'docker/.env').open('a') as f:
+        f.write(f'MANUS_NATIVE_LIBRARY={bridge}\nMANUS_CALIBRATION_DIRECTORY={calibration}\n')
+    for source_args in ([],['--hand-source','manus']):
+        configured=run('updated.sh',source_args)['argv']
+        assert f'manus_native_library:={bridge}' in configured
+        assert f'manus_calibration_directory:={calibration}' in configured
+    explicit=run('updated.sh',['manus_native_library:=custom.so','manus_calibration_directory:=custom-cal'])['argv']
+    assert 'manus_native_library:=custom.so' in explicit
+    assert 'manus_calibration_directory:=custom-cal' in explicit
+    assert f'manus_native_library:={bridge}' not in explicit
+    assert f'manus_calibration_directory:={calibration}' not in explicit
+    configured_litchi=run('updated.sh',['--hand-source','litchibot','--dry-run'])['argv']
+    assert f'manus_native_library:={bridge}' not in configured_litchi
+    assert f'manus_calibration_directory:={calibration}' not in configured_litchi
+
+
 def load_launch(path=LAUNCH):
     pytest.importorskip('launch_ros')
     spec=importlib.util.spec_from_loader('production_launch_test',SourceFileLoader('production_launch_test',str(path)))

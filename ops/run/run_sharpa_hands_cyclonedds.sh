@@ -123,16 +123,35 @@ CHECK
     "validation_driver_script:=$GELLO_REPO/adapters/litchibot/validation_driver.py")
 fi
 
-# Default to the metaglove calibration when the caller passes none, matching the
-# documented stock invocation.
+# Keep the familiar entry point while allowing this deployment to select its
+# MANUS bridge and calibration. Explicit launch arguments take precedence.
 have_calibration=false
+have_native_library=false
 for argument in "${extra_args[@]}"; do
   case "$argument" in
     manus_calibration_directory:=*) have_calibration=true ;;
+    manus_native_library:=*) have_native_library=true ;;
   esac
 done
+manus_calibration="$LITCHI_REPO/calibration/metaglove"
+if [[ "$HAND_SOURCE" == manus ]]; then
+  configured_native="$(deployment_env_value "$GELLO_REPO/docker/.env" MANUS_NATIVE_LIBRARY)"
+  configured_calibration="$(deployment_env_value "$GELLO_REPO/docker/.env" MANUS_CALIBRATION_DIRECTORY)"
+  if [[ "$have_native_library" == false && -n "$configured_native" ]]; then
+    [[ -f "$configured_native" ]] || { echo "Missing MANUS bridge: $configured_native" >&2; exit 1; }
+    extra_args+=("manus_native_library:=$configured_native")
+  fi
+  if [[ "$have_calibration" == false && -n "$configured_calibration" ]]; then
+    for side in left right; do
+      [[ -f "$configured_calibration/Calibration_${side}.mcal" ]] || {
+        echo "Missing MANUS calibration: $configured_calibration/Calibration_${side}.mcal" >&2; exit 1;
+      }
+    done
+    manus_calibration="$configured_calibration"
+  fi
+fi
 if [[ "$have_calibration" == false ]]; then
-  extra_args+=("manus_calibration_directory:=$LITCHI_REPO/calibration/metaglove")
+  extra_args+=("manus_calibration_directory:=$manus_calibration")
 fi
 if [[ "$source_selected" == true && "$HAND_SOURCE" != manus ]]; then
   extra_args+=("hand_source:=$HAND_SOURCE")
