@@ -25,6 +25,30 @@ def unused_port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 
 
+@pytest.mark.parametrize('value',[-.005,-.021,float('nan')])
+def test_manus_idle_feedback_uses_measurement_allowance_and_bounded_no_send_snapshot(value):
+    pytest.importorskip('sensor_msgs.msg')
+    from builtin_interfaces.msg import Time
+    from litchi_hardware.core.types import HandSide
+    from adapters.litchibot.full_runtime import FullHandRuntime
+    from adapters.litchibot.validation_safety import ManusNormalMotionLatch
+    measured=np.zeros(22);measured[7]=value
+    runtime=FullHandRuntime.__new__(FullHandRuntime)
+    runtime.latch=ManusNormalMotionLatch({'session_token':'a'*64},time.monotonic(),source='manus',gui_controlled=True,validation_only=False)
+    runtime.node=SimpleNamespace(_hands={HandSide.LEFT:SimpleNamespace(read_joint_state=lambda:SimpleNamespace(position=measured))},
+        stop_validation=Mock(),get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(to_msg=lambda:Time())))
+    runtime.publishers={'left':Mock()}
+    runtime.idle_snapshot('left')
+    if np.isfinite(value) and value>=-.02:
+        runtime.node.stop_validation.assert_not_called()
+        msg=runtime.publishers['left'].publish.call_args.args[0]
+        assert msg.position[7]==0 and msg.header.frame_id.startswith('supervisor_no_send:')
+        assert measured[7]==value  # Actual feedback is never rewritten.
+    else:
+        runtime.node.stop_validation.assert_called_once()
+        runtime.publishers['left'].publish.assert_not_called()
+
+
 @pytest.mark.parametrize('state',['stale','missing','current','foreign'])
 def test_manus_project_bridge_refresh_before_hardware(tmp_path,monkeypatch,state):
     from teleop_runtime import full_launcher
@@ -326,6 +350,8 @@ def test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch(tmp_path,monkey
             from adapters.litchibot.test_normal_driver import exercise_normal_driver
             exercise_normal_driver(node,fault,hands,mode)
             return
+        assert runtime.server.reply_timeout is None
+        assert runtime.status()['normal_forwarding'] is True
         def feed(side,sequence,jump=False,moderate=False,target=0):
             q=[0.0]*22
             q[18]=float(target)

@@ -27,3 +27,26 @@ Wuji 和 powderweighing 都是显式可选项。前者通过 `--hand-source wuji
 5 秒一次。启动和正常退出也有记录，方便确认诊断是否运行。
 临时诊断不改变指令或安全阈值。该诊断用于定位本次断档及验证后台写入修复，
 根因修复并验证后删除。采集后提供异常 episode 编号即可，不必手工整理日志。
+
+## 默认统一入口与录制告警
+
+后续默认使用统一的臂和 Manus/Sharpa 使能界面：
+
+```bash
+./ops/run/run_gello_full_teleop.sh --hand-source manus --hardware
+```
+
+在该 GUI 中使能双臂和双手，并确认正常跟随后，在独立终端启动触觉采集器：
+
+```bash
+./ops/run/start_sharpa_arm_recording_with_tactile.sh --with-cameras
+```
+
+统一入口已启动手部程序，不要再同时启动旧的 `run_sharpa_hands_cyclonedds.sh`。
+统一 GUI 使用同一采集控制服务（默认 `127.0.0.1:5592`），窄栏明确显示实时缺帧
+监控是否开启。L 踏板开始／停止 episode，Space 打点；普通预警只在窄栏显示，
+严重故障由独立采集器自动收尾并归为“报错”，停止后才弹窗。该故障只结束当前
+episode，不关闭统一遥操或改变臂手使能。下一次 L 才开始新段。
+缺 3 帧按单个相邻帧间隔判断，整段累计数仅作统计。
+
+默认推荐触觉采集器；普通采集配置仍未启用实时缺帧监控，GUI 会明确提示关闭。

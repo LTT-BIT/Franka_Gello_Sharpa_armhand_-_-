@@ -22,6 +22,21 @@ def test_native_speed_policy_only_constructs_for_ordinary_managed_manus():
             ManusNormalMotionLatch(permit(),time.monotonic(),**(options|patch))
 
 
+@pytest.mark.parametrize('value',[-.005,-.019,-.021,float('nan')])
+def test_manus_feedback_allowance_never_expands_command_limits(value):
+    from adapters.litchibot.validation_safety import ManusNormalMotionLatch
+    latch=ManusNormalMotionLatch(permit(),1,source='manus',gui_controlled=True,validation_only=False)
+    measured=np.zeros(22);measured[7]=value
+    def observe():return latch.command('left',JOINT_NAMES,np.zeros(22),1,1,'manus:left:test:1',1.01,measured)
+    if np.isfinite(value) and value>=-.02:
+        assert observe() is False and latch.samples['left']==1
+        target=np.zeros(22);target[7]=value
+        with pytest.raises(ValueError,match='limit'):
+            latch.command('left',JOINT_NAMES,target,2,2,'manus:left:test:2',1.02,measured)
+    else:
+        with pytest.raises(ValueError):observe()
+
+
 def permit():
     return {'mode':'supervised_hardware_validation','operator':'test only','sop_reference':'test SOP',
         'adult_qualified_operator':True,'sop_reviewed':True,'physical_estop_checked':True,

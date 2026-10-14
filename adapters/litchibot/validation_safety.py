@@ -117,6 +117,7 @@ class RawContinuityGate:
 class MotionLatch:
     """Both-hand latched stop; restart required after any trip or deadman release."""
     limit_output_slew = True
+    feedback_limit_tolerance = 0.0
     def __init__(self, permit, now, *, gui_controlled=False, source='litchibot',validation_only=True):
         self.permit = permit
         self.phase = 'WARMUP'
@@ -239,7 +240,7 @@ class MotionLatch:
         q = np.asarray(positions,dtype=float); measured = np.asarray(feedback,dtype=float)
         if any(v.shape!=(22,) or not np.isfinite(v).all() for v in (q,measured)):
             raise ValueError('Expected finite 22D command and feedback')
-        if any(np.any(v<JOINT_LIMITS[:,0]) or np.any(v>JOINT_LIMITS[:,1]) for v in (q,measured)):
+        if np.any(q<JOINT_LIMITS[:,0]) or np.any(q>JOINT_LIMITS[:,1]) or np.any(measured<JOINT_LIMITS[:,0]-self.feedback_limit_tolerance) or np.any(measured>JOINT_LIMITS[:,1]+self.feedback_limit_tolerance):
             raise ValueError('Command/feedback joint limit violation')
         previous = self.last.get(side)
         if previous:
@@ -278,6 +279,9 @@ class MotionLatch:
 class ManusNormalMotionLatch(MotionLatch):
     """Ordinary MANUS uses the native Sharpa speed setting, like Terminal 2."""
     limit_output_slew = False
+    # Match TargetGate's existing feedback-only measurement allowance. This
+    # never expands the legal command range or changes raw joint-state topics.
+    feedback_limit_tolerance = 0.02
 
     def __init__(self,*args,**kwargs):
         if kwargs.get('source')!='manus' or kwargs.get('validation_only') is not False or kwargs.get('gui_controlled') is not True:

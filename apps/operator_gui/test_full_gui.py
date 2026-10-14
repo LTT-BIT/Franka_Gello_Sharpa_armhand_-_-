@@ -239,3 +239,142 @@ def test_gui_window_close_notifies_launcher_without_supervisor_connection(tmp_pa
             window.close()
             assert json.loads(receiver.recv(4096))==dict(command='gui_closed',token=token)
         finally:window.close();window.deleteLater();app.processEvents()
+
+
+def test_manus_unified_gui_collector_gap_stop_and_pedal_restart(tmp_path, monkeypatch):
+    """Exercise the shared full-entry GUI through the real collector TCP API."""
+    from types import SimpleNamespace
+    root = Path(__file__).resolve().parents[2]
+    for package in ('teleop_core', 'teleop_data_collector'):
+        monkeypatch.syspath_prepend(str(root / 'ros_ws' / 'src' / package))
+    from teleop_data_collector.continuity import ContinuityMonitor
+    from teleop_data_collector.collector_control import CollectorController, CollectorControlServer
+
+    app = QApplication.instance() or QApplication([])
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    cfg = tmp_path / 'session.json'
+    cfg.write_text(json.dumps(dict(source='manus', mode='normal', token='f'*64, control_port=port())))
+    monkeypatch.setenv('TELEOP_FULL_CONFIG', str(cfg))
+    monkeypatch.delenv('TELEOP_FULL_EXIT_SOCKET', raising=False)
+    gate = threading.Event()
+    topic = '/cam1/color/image_raw'
+    monitor = ContinuityMonitor([topic])
+
+    class Recorder:
+        active = False
+        current_bag_dir = None
+        last_bag_dir = None
+        milestones = []
+        count = 0
+        report = {}
+
+        def start(self):
+            self.current_bag_dir = tmp_path / f'episode{self.count}'
+            self.count += 1
+            self.current_bag_dir.mkdir()
+            self.last_bag_dir = self.current_bag_dir
+            self.active = True
+            return self.current_bag_dir
+
+        def set_live_continuity(self, report):
+            self.report = report
+
+        def stop(self, *, interrupted=False):
+            assert gate.wait(3), 'finalization gate timed out'
+            bag = self.current_bag_dir
+            failed = bool(self.report.get('auto_stop_reason'))
+            (bag / 'collection_state.json').write_text(json.dumps(dict(
+                state='incomplete' if failed else 'finalized', finalized=not failed,
+                failures=[self.report['auto_stop_reason']] if failed else [],
+                live_continuity=self.report)))
+            self.active = False
+            self.current_bag_dir = None
+            return bag
+
+    recorder = Recorder()
+    logger = SimpleNamespace(info=lambda _: None, warn=lambda _: None, error=lambda _: None)
+    controller = CollectorController(SimpleNamespace(continuity_monitor=monitor, get_logger=lambda: logger),
+                                     recorder, quality_dir=tmp_path / 'quality')
+    controller.set_ready()
+    server = CollectorControlServer(('127.0.0.1', 0), controller)
+    thread = server.start_in_thread()
+    window = OperatorWindow('127.0.0.1', port(), collection_port=server.server_address[1])
+    window.collection_poll_timer.setInterval(20)
+
+    def wait(predicate):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            app.processEvents()
+            if predicate():
+                return
+            time.sleep(.003)
+        raise AssertionError(window.collection_status)
+
+    pedal = next(s for s in window.collection_shortcuts if s.key().toString() == 'L')
+    try:
+        wait(lambda: window.collection_state == 'READY')
+        assert window.full_config['source'] == 'manus'
+        assert '实时缺帧监控：开启' in window.collection_status_label.text()
+        pedal.activated.emit()
+        wait(lambda: window.collection_state == 'RECORDING')
+        # Three separate one-frame gaps must only warn, never sum into failure.
+        stamp = 1_000_000_000
+        monitor.observe(topic, stamp, time.monotonic())
+        for _ in range(3):
+            stamp += 66_666_667
+            monitor.observe(topic, stamp, time.monotonic())
+        controller.check_continuity()
+        wait(lambda: bool(window.collection_status.get('alerts')))
+        assert window.collection_state == 'RECORDING'
+        assert window.continuity_dialog is None
+        assert '预警' in window.collection_status_label.text()
+        # A single gap missing three frames triggers autonomous finalization.
+        stamp += 133_333_333
+        monitor.observe(topic, stamp, time.monotonic())
+        controller.check_continuity()
+        wait(lambda: window.collection_state == 'STOPPING')
+        assert window.continuity_dialog is None
+        assert not window.collection_record_button.isEnabled()
+        assert not window.collection_milestone_button.isEnabled()
+        gate.set()
+        wait(lambda: window.collection_status.get('quality') == '报错')
+        assert window.collection_state == 'INCOMPLETE'
+        assert window.continuity_dialog is not None
+        assert not window.continuity_dialog.isModal()
+        assert window.quality_dialog is None
+        assert window.collection_record_button.isEnabled()
+        pedal.activated.emit()
+        wait(lambda: window.collection_status.get('current_episode') == 'episode1')
+        assert window.collection_state == 'RECORDING'
+        assert window.continuity_dialog is None
+        assert not window.collection_status['alerts']
+        assert window.collection_status['auto_stop_reason'] is None
+        assert monitor.snapshot()['auto_stop_reason'] is None
+    finally:
+        gate.set()
+        controller.wait_for_finalization()
+        controller.stop_if_present(interrupted=True)
+        window.close()
+        window.deleteLater()
+        app.processEvents()
+        server.shutdown()
+        server.server_close()
+        thread.join(1)
+
+
+def test_manus_unified_gui_reports_missing_continuity_monitor(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    cfg = tmp_path / 'session.json'
+    cfg.write_text(json.dumps(dict(source='manus', mode='normal', token='f'*64, control_port=port())))
+    monkeypatch.setenv('TELEOP_FULL_CONFIG', str(cfg))
+    monkeypatch.delenv('TELEOP_FULL_EXIT_SOCKET', raising=False)
+    window = OperatorWindow('127.0.0.1', port(), collection_port=port())
+    try:
+        assert '触觉采集终端' in window.collection_status_label.text()
+        window._apply_collection_status(dict(state='READY', continuity_enabled=False, can_start=True))
+        assert '实时缺帧监控：关闭' in window.collection_status_label.text()
+        assert '触觉采集器' in window.collection_status_label.text()
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()

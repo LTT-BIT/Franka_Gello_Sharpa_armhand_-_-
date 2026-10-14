@@ -58,6 +58,7 @@ class CollectorController:
         busy = phase in {"STOPPING", "VALIDATING"}
         return {
             "state": phase if busy else "RECORDING" if active else phase,
+            "continuity_enabled": self._monitor is not None,
             "continuity_health": health,
             "alerts": health.get("alerts", []),
             "auto_stop_reason": auto_stop_reason,

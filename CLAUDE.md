@@ -6,3 +6,5 @@
 - Hardware output defaults to disabled. Never weaken freshness, acquisition, limit, or slew checks to make a test pass.
 - Keep source adapters, safety/control, and data tooling independent.
 - Do not add glue-dispenser terminology or functionality.
+
+- Operator GUI changes default to `ops/run/run_gello_full_teleop.sh --hand-source manus --hardware`. This unified entry shares `apps/operator_gui/operator_gui.py` with the legacy arms entry; do not create a separate legacy-only UI unless explicitly requested. Keep collection independent of arm/hand enable and lifecycle.

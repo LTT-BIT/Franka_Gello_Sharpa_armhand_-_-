@@ -239,7 +239,7 @@ class OperatorWindow(QMainWindow):
         if self.full_config:
             from apps.operator_gui.hand_client import HandClient
             self.hand_client=HandClient(self.full_config['control_port'],self.full_config['token'],self,
-                normal_forwarding=self.full_config.get('source')=='litchibot' and self.full_config.get('mode') in ('normal','fake'))
+                normal_forwarding=self.full_config.get('source') in ('litchibot','manus') and self.full_config.get('mode') in ('normal','fake'))
             self.hand_client.status.connect(self._apply_hand_status)
             self.hand_client.event.connect(self._hand_event)
             if self.full_config['mode']=='supervised_hardware_validation':
@@ -273,7 +273,7 @@ class OperatorWindow(QMainWindow):
 
         collection_box = QGroupBox("数据采集（独立采集终端）")
         collection_layout = QHBoxLayout(collection_box)
-        self.collection_status_label = QLabel("OFFLINE — 请启动采集终端")
+        self.collection_status_label = QLabel(self._collection_offline_text())
         self.collection_status_label.setMinimumWidth(330)
         self.collection_status_label.setWordWrap(True)
         self.collection_status_label.setStyleSheet(
@@ -877,12 +877,17 @@ class OperatorWindow(QMainWindow):
     def _collection_disconnected(self) -> None:
         self._set_collection_offline()
 
+    def _collection_offline_text(self) -> str:
+        if self.full_config:
+            return "OFFLINE — 请启动触觉采集终端以启用缺帧监控"
+        return "OFFLINE — 请启动采集终端"
+
     def _set_collection_offline(self) -> None:
         self.collection_state = "OFFLINE"
         self.collection_poll_timer.stop()
         self.collection_pending.clear()
         self.collection_buffer = b""
-        self.collection_status_label.setText("OFFLINE — 请启动采集终端")
+        self.collection_status_label.setText(self._collection_offline_text())
         self.collection_status_label.setStyleSheet(
             "color: #777; font-weight: bold;"
         )
@@ -1015,6 +1020,10 @@ class OperatorWindow(QMainWindow):
         episode = status.get("current_episode") or status.get("last_episode") or "-"
         elapsed = status.get("elapsed_sec")
         detail = f" · {episode}"
+        if status.get("continuity_enabled") is True:
+            detail += " · 实时缺帧监控：开启"
+        elif self.full_config and status.get("continuity_enabled") is False:
+            detail += " · 实时缺帧监控：关闭（请使用触觉采集器）"
         if elapsed is not None:
             detail += f" · {float(elapsed):.1f}s"
         if status.get("quality"):
@@ -1051,6 +1060,8 @@ class OperatorWindow(QMainWindow):
         elif status.get("auto_stop_reason"):
             style = "color: #c22525; font-weight: bold;"
         elif alerts:
+            style = "color: #a35b00; font-weight: bold;"
+        elif self.full_config and status.get("continuity_enabled") is False:
             style = "color: #a35b00; font-weight: bold;"
         elif state in {"READY", "FINALIZED"}:
             style = "color: #248a3d; font-weight: bold;"

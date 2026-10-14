@@ -16,6 +16,30 @@ libfranka/FCI 连接。
 
 不要在双臂遥操期间运行这个直接连接 FR3 的录制路径。
 
+## 默认统一入口与录制告警
+
+后续默认使用统一的臂和 Manus/Sharpa 使能界面：
+
+```bash
+./ops/run/run_gello_full_teleop.sh --hand-source manus --hardware
+```
+
+在该 GUI 中使能双臂和双手，并确认正常跟随后，在独立终端启动触觉采集器：
+
+```bash
+./ops/run/start_sharpa_arm_recording_with_tactile.sh --with-cameras
+```
+
+统一入口已启动手部程序，不要再同时启动旧的 `run_sharpa_hands_cyclonedds.sh`。
+统一 GUI 使用同一采集控制服务（默认 `127.0.0.1:5592`），窄栏明确显示实时缺帧
+监控是否开启。L 踏板开始／停止 episode，Space 打点；普通预警只在窄栏显示，
+严重故障由独立采集器自动收尾并归为“报错”，停止后才弹窗。该故障只结束当前
+episode，不关闭统一遥操或改变臂手使能。下一次 L 才开始新段。
+缺 3 帧按单个相邻帧间隔判断，整段累计数仅作统计。
+
+默认推荐触觉采集器；普通采集配置仍未启用实时缺帧监控，GUI 会明确提示关闭。
+下面的原三终端说明保留用于分离启动或特殊诊断。
+
 ## 启动和录制
 
 终端 1：保持原来的双臂启动流程。

@@ -37,6 +37,10 @@ class FullHandRuntime:
         self.keypoints={s:{} for s in ('left','right')};self.pending={s:[] for s in ('left','right')}
         self.sequence={'left':0,'right':0};self.control_sequence=0;self.last_gui_sequence=-1
         self.server=HandControlServer(config['control_port'],config['token'])
+        if config['source']=='manus' and config['mode'] in ('normal','fake'):
+            # A delayed ROS response is not a broken TCP connection. MotionLatch
+            # still enforces the original fresh GUI heartbeat before motion.
+            self.server.reply_timeout=None
         self.publishers={s:node.create_publisher(JointState,f'/sharpa/{s}/command',10) for s in ('left','right')}
         self.state_publisher=node.create_publisher(String,'/teleop/sharpa/supervisor/state',10)
         self.subscriptions=[];self.services=[]
@@ -107,6 +111,7 @@ class FullHandRuntime:
     def status(self):
         now=time.monotonic()
         return {'mode':self.config['mode'],'phase':self.latch.phase,'reason':self.latch.reason,
+            'normal_forwarding':self.config['source']=='manus' and self.config['mode'] in ('normal','fake'),
             # Published by tick after the constructor's SDK stop calls finish.
             'source_ready':True,
             'hands':{s:{'state':self.latch.side_state(s,now),'permit':self.latch.requested[s],
@@ -191,11 +196,19 @@ class FullHandRuntime:
         from .retarget import JOINT_LIMITS
         hand=self.node._hands[next(s for s in self.node._hands if s.value==side)]
         measured=np.asarray(hand.read_joint_state().position)
-        if measured.shape!=(22,) or not np.isfinite(measured).all() or np.any(measured<JOINT_LIMITS[:,0]) or np.any(measured>JOINT_LIMITS[:,1]):
-            self.node.stop_validation('Invalid idle hand feedback');return
+        tolerance=getattr(self.latch,'feedback_limit_tolerance',0.0)
+        if measured.shape!=(22,) or not np.isfinite(measured).all() or np.any(measured<JOINT_LIMITS[:,0]-tolerance) or np.any(measured>JOINT_LIMITS[:,1]+tolerance):
+            detail=f'side={side}, shape={measured.shape}'
+            if measured.shape==(22,) and np.isfinite(measured).all():
+                excess=np.maximum(JOINT_LIMITS[:,0]-measured,measured-JOINT_LIMITS[:,1])
+                j=int(np.argmax(excess))
+                detail+=f', joint={JOINT_NAMES[j]}, measured={measured[j]:.8f}, limits={JOINT_LIMITS[j].tolist()}, excess={excess[j]:.8f} rad'
+            self.node.stop_validation('Invalid idle hand feedback: '+detail);return
         msg=JointState();msg.header.stamp=self.node.get_clock().now().to_msg()
         msg.header.frame_id=f'supervisor_no_send:{side}:{self.latch.side_state(side,time.monotonic())}'
-        msg.name=list(JOINT_NAMES);msg.position=[float(q) for q in measured]
+        # A no-send command snapshot is a bounded hold reference. The original
+        # /joint_states publisher retains the unmodified measured values.
+        msg.name=list(JOINT_NAMES);msg.position=[float(q) for q in np.clip(measured,JOINT_LIMITS[:,0],JOINT_LIMITS[:,1])]
         self.publishers[side].publish(msg)
 
     def keypoint(self,side,message):
@@ -412,7 +425,8 @@ class FullHandRuntime:
                 context.update(joint=JOINT_NAMES[j],target_value=raw_q[j],measured_value=np.asarray(measured)[j],delta=limited[j])
                 self.emit_event('WARNING',side,'Target bounded by existing acquisition/slew limit; only limited command forwarded',**context)
         msg=JointState();msg.header.stamp=self.node.get_clock().now().to_msg()
-        msg.name=list(JOINT_NAMES);msg.position=[float(v) for v in (q if forward else measured)]
+        from .retarget import JOINT_LIMITS
+        msg.name=list(JOINT_NAMES);msg.position=[float(v) for v in (q if forward else np.clip(measured,JOINT_LIMITS[:,0],JOINT_LIMITS[:,1]))]
         msg.header.frame_id=('supervisor_active:' if forward else 'supervisor_disabled:')+frame_id
         if forward:
             self.node.forward_full(enum,msg)
