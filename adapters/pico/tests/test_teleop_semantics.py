@@ -115,8 +115,6 @@ def test_open_hand_disengages_only_selected_side_before_opening():
         (),
         {"request_open": lambda _self, *, sides: opened.append(sides)},
     )()
-    teleop.hand_home_store = None
-    teleop.reset_hand_targets = None
     teleop._notify = lambda _message: None
 
     teleop._open_hands(("right",))
@@ -142,8 +140,6 @@ def test_home_arm_does_not_also_open_the_hand():
         (),
         {"request_open": lambda _self, **_kwargs: opened.append(True)},
     )()
-    teleop.hand_home_store = None
-    teleop.reset_hand_targets = None
     teleop.reset_invoker = lambda side, task: (True, f"{side or 'both'}:{task}")
     teleop.reset_thread = None
     teleop.reset_outcome = []
@@ -155,9 +151,8 @@ def test_home_arm_does_not_also_open_the_hand():
     assert opened == []
 
 
-def test_home_moves_wuji_hand_only_after_arm_home_succeeds():
+def test_home_moves_only_arm_and_never_requests_a_hand_pose():
     order = []
-    target = tuple([0.25] * 20)
     teleop = object.__new__(DualFr3HardwareTeleop)
     teleop.operator = type(
         "Operator", (), {"disable_all": lambda _self, _reason: None}
@@ -171,15 +166,11 @@ def test_home_moves_wuji_hand_only_after_arm_home_succeeds():
         (),
         {"request_pose": lambda _self, poses: order.append(("hands", poses))},
     )()
-    teleop.hand_home_store = type(
-        "Store", (), {"load": lambda _self, task, sides: {"left": target}}
-    )()
     teleop.reset_invoker = lambda side, task: (
         order.append(("arms", side, task)) or (True, "arm done")
     )
     teleop.reset_thread = None
     teleop.reset_outcome = []
-    teleop.reset_hand_targets = None
     teleop.capture_thread = None
     teleop.preset_thread = None
     teleop.active_preset = None
@@ -191,11 +182,8 @@ def test_home_moves_wuji_hand_only_after_arm_home_succeeds():
     teleop.reset_thread.join(timeout=1.0)
     teleop._service_reset()
 
-    assert order == [
-        ("arms", "left", "assembly"),
-        ("hands", {"left": target}),
-    ]
-    assert "arms settled, Wuji hands are now moving" in notifications[-1]
+    assert order == [("arms", "left", "assembly")]
+    assert notifications[-1] == "reset done: arm done"
 
 
 def test_ready_to_home_disengages_and_invokes_selected_task():
@@ -220,9 +208,7 @@ def test_ready_to_home_disengages_and_invokes_selected_task():
     )
     teleop.reset_thread = None
     teleop.reset_outcome = []
-    teleop.reset_hand_targets = None
     teleop.hands = None
-    teleop.hand_home_store = None
     teleop.capture_thread = None
     teleop.preset_thread = None
     teleop.active_preset = None
@@ -260,9 +246,7 @@ def _capture_test_teleop(active: bool, invoker):
     teleop.capture_side = None
     teleop.capture_task = None
     teleop.capture_outcome = []
-    teleop.capture_hand_positions = None
     teleop.hands = None
-    teleop.hand_home_store = None
     teleop._notify = notifications.append
     return teleop, notifications, activation_changes
 
@@ -300,31 +284,23 @@ def test_capture_home_records_only_the_selected_stopped_arm():
     ]
 
 
-def test_capture_home_records_same_side_wuji_hand_feedback():
-    saved = []
-    target = tuple(float(index) / 20.0 for index in range(20))
+def test_capture_home_ignores_active_hand_and_never_reads_its_feedback():
+    invoked = []
     teleop, notifications, _ = _capture_test_teleop(
-        False, lambda side, task: (True, "arm saved")
+        False, lambda side, task: (invoked.append((side, task)) or (True, "arm saved"))
     )
-    teleop.operator.poll_hands = lambda: {"left": False, "right": False}
-    teleop.hands = type(
-        "Hands", (), {"feedback_position": lambda _self, side: target}
-    )()
-    teleop.hand_home_store = type(
-        "Store",
-        (),
-        {
-            "save_side": lambda _self, task, side, positions: saved.append(
-                (task, side, positions)
-            )
-        },
-    )()
+    teleop.operator.poll_hands = lambda: {"left": True, "right": True}
 
+    class Hands:
+        def feedback_position(self, side):
+            raise AssertionError("arm Home capture must not read hand joints")
+
+    teleop.hands = Hands()
     teleop._start_capture_home("left", "bean_picking")
     teleop.capture_thread.join(timeout=1.0)
     teleop._service_capture_home()
 
-    assert saved == [("bean_picking", "left", target)]
+    assert invoked == [("left", "bean_picking")]
     assert "夹豆 Home capture done" in notifications[-1]
 
 

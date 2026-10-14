@@ -121,6 +121,10 @@ def test_record_home_sends_per_side_command_only_while_arm_is_stopped(tmp_path):
             (command, arguments or {})
         )
 
+        window._apply_status({"hand_active": {"left": True}})
+        window.hand_engage_buttons["left"].setChecked(True)
+        assert window.capture_home_buttons["left"].isEnabled()
+        assert window.capture_home_buttons["left"].text() == "Record arm as Home"
         window._record_current_home("left")
         window.arm_engage_buttons["right"].setChecked(True)
         window._record_current_home("right")

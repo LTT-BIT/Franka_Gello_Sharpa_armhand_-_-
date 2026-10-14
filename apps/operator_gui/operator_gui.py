@@ -265,17 +265,20 @@ class OperatorWindow(QMainWindow):
         layout.addWidget(QLabel("System status"))
         self.status_label = QPlainTextEdit("-")
         self.status_label.setReadOnly(True)
-        self.status_label.setMinimumHeight(240)
+        self.status_label.setFixedHeight(100)
         self.status_label.setFont(
             QFontDatabase.systemFont(QFontDatabase.FixedFont)
         )
-        layout.addWidget(self.status_label, stretch=2)
+        layout.addWidget(self.status_label)
 
         collection_box = QGroupBox("数据采集（独立采集终端）")
+        collection_box.setFixedHeight(210)
+        collection_box.setStyleSheet("QGroupBox { background-color: white; }")
         collection_layout = QHBoxLayout(collection_box)
         self.collection_status_label = QLabel(self._collection_offline_text())
         self.collection_status_label.setMinimumWidth(330)
         self.collection_status_label.setWordWrap(True)
+        self.collection_status_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.collection_status_label.setStyleSheet(
             "color: #777; font-weight: bold;"
         )
@@ -304,7 +307,7 @@ class OperatorWindow(QMainWindow):
             self.collection_quality_button,
         ):
             button.setEnabled(False)
-            collection_layout.addWidget(button)
+            collection_layout.addWidget(button, alignment=Qt.AlignBottom)
         layout.addWidget(collection_box)
 
         sides_row = QHBoxLayout()
@@ -363,10 +366,10 @@ class OperatorWindow(QMainWindow):
             self.hand_engage_buttons[side] = hand_engage
             grid.addWidget(hand_engage, 2, 0)
 
-            capture_home = QPushButton("Record arm + hand as Home")
+            capture_home = QPushButton("Record arm as Home")
             capture_home.setFocusPolicy(Qt.NoFocus)
             capture_home.setToolTip(
-                "Save this arm and its Wuji Hand 2 measured joints as task Home. "
+                "Save this arm's measured joints as task Home. "
                 "This does not move the robot."
             )
             capture_home.clicked.connect(
@@ -505,8 +508,8 @@ class OperatorWindow(QMainWindow):
             f"{task_label} Home?"
         )
         message.setInformativeText(
-            "The arm and hand must be stopped. Recording does not move hardware; "
-            "the next Home command moves the arm first, then the Wuji hand."
+            "The arm must be stopped. Recording does not move hardware; "
+            "the next Home command moves this arm to the recorded pose."
         )
         message.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
         message.setDefaultButton(QMessageBox.Cancel)
@@ -533,11 +536,6 @@ class OperatorWindow(QMainWindow):
         if self.arm_engage_buttons[side].isChecked():
             self.feedback.appendPlainText(
                 f"[capture_home] rejected: stop the {side} arm first"
-            )
-            return
-        if self.hand_engage_buttons[side].isChecked():
-            self.feedback.appendPlainText(
-                f"[capture_home] rejected: stop the {side} hand first"
             )
             return
         self._send(
@@ -1233,7 +1231,6 @@ class OperatorWindow(QMainWindow):
             button.setEnabled(
                 not self.arm_engage_buttons[side].isChecked()
                 and not self.arm_hold_buttons[side].isChecked()
-                and not self.hand_engage_buttons[side].isChecked()
             )
         both_stopped = not any(
             button.isChecked() for button in self.arm_engage_buttons.values()

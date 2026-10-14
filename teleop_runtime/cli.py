@@ -22,7 +22,6 @@ from pico_bimanual_franka_teleop.preset_ik_client import invoke_preset_ik
 from pico_bimanual_franka_teleop.relative_action import load_preset_actions
 from pico_bimanual_franka_teleop.xr_input import PicoSession, create_pico_input
 from operator_tasks import DEFAULT_OPERATOR_TASK, require_operator_task
-from operator_hand_poses import HandHomeStore
 
 
 def _invoke_trigger_service(service: str, timeout: float = 120.0) -> tuple[bool, str]:
@@ -609,7 +608,6 @@ def main() -> None:
             capture_home_invoker=invoke_capture_home,
             ready_invoker=invoke_ready,
             ready_to_home_invoker=invoke_ready_to_home,
-            hand_home_store=HandHomeStore(args.preset_data_root),
             preset_actions=preset_actions,
             preset_solver=lambda preset: invoke_preset_ik(
                 preset, max_joint_speed=config.host.max_joint_speed
