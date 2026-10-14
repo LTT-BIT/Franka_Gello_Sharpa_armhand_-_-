@@ -36,6 +36,7 @@ class DeltaDistribution:
 
 
 class NormalContinuityGate(RawContinuityGate):
+    moderate_is_warning = False
     # Preserve the existing 0.10 detection boundary as a warning/reject trigger.
     # Extreme boundaries are provisional geometry-based caps, not calibrated values.
     target_moderate = np.full(22, JUMP_RAD)
@@ -66,6 +67,11 @@ class NormalContinuityGate(RawContinuityGate):
         self.reason = f'Raw discontinuity: {side} {JOINT_NAMES[j]}, target delta={delta[j]:.6f} rad{source}'
         if extreme:
             raise ValueError('Extreme '+self.reason)
+        if self.moderate_is_warning:
+            self.warning_context=dict(joint=JOINT_NAMES[j],delta=float(delta[j]))
+            # Ordinary MANUS follows targets with the native Sharpa speed
+            # setting; extreme jumps and packet validity checks still reject.
+            return True
         events = self.events[side]
         while events and (stamp_ns-events[0])/1e9 > self.repeat_window_s:
             events.popleft()
@@ -77,10 +83,24 @@ class NormalContinuityGate(RawContinuityGate):
         return False
 
 
+class ManusNormalContinuityGate(NormalContinuityGate):
+    """During following, moderate raw jumps warn without revoking permits.
+
+    Standby acquisition still requires stable observations; extreme jumps and
+    all packet validity/freshness checks retain the original rejection policy.
+    """
+    following = False
+
+    @property
+    def moderate_is_warning(self):
+        return self.following
+
+
 def full_continuity_gate(source, mode):
     if source=='litchibot' and mode in ('normal','fake'):
         from .normal_control import BasicNormalTarget
         return BasicNormalTarget()
     if mode in ('normal','fake'):
+        if source=='manus':return ManusNormalContinuityGate()
         return NormalContinuityGate()
     return RawContinuityGate()

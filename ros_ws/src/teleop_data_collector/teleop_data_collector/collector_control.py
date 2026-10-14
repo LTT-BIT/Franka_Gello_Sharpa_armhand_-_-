@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import socketserver
 import threading
 import time
@@ -26,6 +27,10 @@ class CollectorController:
             quality_dir if quality_dir is not None else getattr(node, "quality_dir", DEFAULT_QUALITY_DIR)
         )
         self._quality: str | None = None
+        self._monitor = getattr(node, "continuity_monitor", None)
+        self._auto_stop_reason: dict[str, Any] | None = None
+        self._seen_alerts: set[int] = set()
+        self._worker: threading.Thread | None = None
 
     def set_ready(self) -> None:
         with self._state_lock:
@@ -40,6 +45,7 @@ class CollectorController:
             started_at = self._started_at
             last_state = dict(self._last_state)
             quality = self._quality
+            auto_stop_reason = self._auto_stop_reason
         active = bool(self._recorder.active)
         current = self._recorder.current_bag_dir
         last_bag = self._recorder.last_bag_dir
@@ -48,8 +54,14 @@ class CollectorController:
             if active and started_at is not None
             else None
         )
+        health = self._monitor.snapshot() if self._monitor is not None else {}
+        busy = phase in {"STOPPING", "VALIDATING"}
         return {
-            "state": "RECORDING" if active else phase,
+            "state": phase if busy else "RECORDING" if active else phase,
+            "continuity_health": health,
+            "alerts": health.get("alerts", []),
+            "auto_stop_reason": auto_stop_reason,
+            "source_warnings": list(last_state.get("source_warnings") or health.get("source_warnings") or []),
             "ready": ready,
             "active": active,
             "current_episode": current.name if current is not None else None,
@@ -57,18 +69,18 @@ class CollectorController:
             "last_episode": last_bag.name if last_bag is not None else None,
             "last_bag": str(last_bag) if last_bag is not None else None,
             "quality": quality,
-            "quality_pending": bool(last_state) and quality is None and not active,
+            "quality_pending": bool(last_state) and quality is None and not active and not busy,
             "can_rate_quality": bool(last_state) and not active and phase not in {"STOPPING", "VALIDATING"},
             "elapsed_sec": elapsed_sec,
             "finalized": bool(last_state.get("finalized", False)),
             "failures": list(last_state.get("failures") or []),
             "boundary_warnings": list(last_state.get("boundary_warnings") or []),
             "transport_warnings": list(last_state.get("transport_warnings") or []),
-            "can_start": ready and not active and phase not in {"STOPPING", "VALIDATING"},
-            "can_stop": active,
+            "can_start": ready and not active and not busy and not (auto_stop_reason and quality is None),
+            "can_stop": active and not busy,
             "can_mark_milestone": active and phase == "RECORDING",
             "milestones": self._recorder.milestones,
-            "can_discard": not active and last_bag is not None,
+            "can_discard": not active and last_bag is not None and not busy,
         }
 
     def start(self) -> dict[str, Any]:
@@ -78,10 +90,16 @@ class CollectorController:
                     raise RuntimeError("collector is still waiting for required topics")
                 if self._phase in {"STOPPING", "VALIDATING"}:
                     raise RuntimeError("collector is still finalizing the previous episode")
+            if self._monitor is not None and self._auto_stop_reason and self._quality is None:
+                raise RuntimeError("请先保存上一段的报错或放弃分类")
             if self._recorder.active:
                 raise RuntimeError("an episode is already recording")
             bag_dir = self._recorder.start()
+            if self._monitor is not None:
+                self._monitor.begin(bag_dir.name, time.monotonic())
             with self._state_lock:
+                self._auto_stop_reason = None
+                self._seen_alerts.clear()
                 self._phase = "RECORDING"
                 self._started_at = time.monotonic()
                 self._last_state = {}
@@ -94,6 +112,8 @@ class CollectorController:
     def stop(self, *, interrupted: bool = False) -> dict[str, Any]:
         with self._operation_lock:
             if self._recorder.current_bag_dir is None:
+                if self._auto_stop_reason is not None:
+                    return self.status()
                 raise RuntimeError("no episode is currently recording")
             return self._stop_locked(interrupted=interrupted)
 
@@ -118,12 +138,77 @@ class CollectorController:
                 return self.status()
             return self._stop_locked(interrupted=True)
 
-    def stop_if_present(self, *, interrupted: bool) -> dict[str, Any]:
+    def stop_if_present(self, *, interrupted: bool, expected_episode: str | None = None) -> dict[str, Any]:
         """Idempotent shutdown stop used when Ctrl-C races a UI request."""
         with self._operation_lock:
-            if self._recorder.current_bag_dir is None:
+            current = self._recorder.current_bag_dir
+            if current is None or (expected_episode is not None and current.name != expected_episode):
                 return self.status()
             return self._stop_locked(interrupted=interrupted)
+
+    def wait_for_finalization(self) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker.join()
+
+    def check_continuity(self) -> None:
+        if self._monitor is None or not self._monitor.active:
+            return
+        report = self._monitor.snapshot()
+        # At most one retained alert per stream/category, so this set is bounded
+        # by episode events only while we periodically prune superseded IDs.
+        # Schedule safety finalization before diagnostic logging: logging must
+        # never prevent an already detected failure from stopping the bag.
+        reason = report.get("auto_stop_reason")
+        if reason is not None:
+            self.request_stop(reason=reason)
+        alerts = report.get("alerts", [])
+        ids = {alert["id"] for alert in alerts}
+        for alert in alerts:
+            if alert["id"] not in self._seen_alerts:
+                from .continuity import format_alert
+                logger = self._node.get_logger()
+                # Humble caches severity per Python call site. Keep each
+                # severity on its own line rather than invoking a conditional.
+                try:
+                    if alert["severity"] == "failure":
+                        logger.error(format_alert(alert))
+                    else:
+                        logger.warn(format_alert(alert))
+                except Exception as error:
+                    print(f"Continuity diagnostic logging failed: {error}; {format_alert(alert)}",
+                          file=sys.stderr, flush=True)
+        self._seen_alerts = ids
+
+    def request_stop(self, *, reason: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Schedule a single finalization without blocking status polling."""
+        with self._state_lock:
+            if self._phase != "RECORDING":
+                return_status = True
+            else:
+                if reason is not None and reason.get("episode") != self._monitor.episode:
+                    return_status = True
+                else:
+                    self._phase = "STOPPING"
+                    self._auto_stop_reason = reason
+                    return_status = False
+        if not return_status:
+            episode = self._monitor.episode
+            self._monitor.end()
+
+            def finalize():
+                try:
+                    self.stop_if_present(interrupted=False, expected_episode=episode)
+                except Exception as error:
+                    # Retain failure/quality pending status, including classification
+                    # write errors; the UI can retry rate_quality without restarting.
+                    self._node.get_logger().error(f"Episode finalization failed: {error}")
+                    with self._state_lock:
+                        self._phase = "INCOMPLETE"
+
+            self._worker = threading.Thread(target=finalize, name="episode-finalization", daemon=True)
+            self._worker.start()
+        return self.status()
 
     def _stop_locked(self, *, interrupted: bool) -> dict[str, Any]:
         with self._state_lock:
@@ -131,20 +216,30 @@ class CollectorController:
         self._node.get_logger().info(
             "STOPPING: finalizing and validating the active episode; please wait..."
         )
+        if self._monitor is not None:
+            report = self._monitor.end()
+            with self._state_lock:
+                self._auto_stop_reason = self._auto_stop_reason or report.get("auto_stop_reason")
+            self._recorder.set_live_continuity(report)
         bag_dir = self._recorder.stop(interrupted=interrupted)
         state = _read_collection_state(bag_dir)
         with self._state_lock:
             self._started_at = None
             self._last_state = state
-            self._phase = str(state.get("state") or "INCOMPLETE").upper()
+            final_phase = str(state.get("state") or "INCOMPLETE").upper()
+            self._phase = "STOPPING" if self._auto_stop_reason is not None else final_phase
+        if self._auto_stop_reason is not None and bag_dir is not None:
+            try:
+                self._save_quality_locked(bag_dir.name, "报错")
+            finally:
+                with self._state_lock:
+                    self._phase = final_phase
         return self.status()
 
     def discard(self) -> dict[str, Any]:
         with self._operation_lock:
-            if self._recorder.active:
-                with self._state_lock:
-                    self._phase = "STOPPING"
-                self._recorder.stop()
+            if self._recorder.current_bag_dir is not None:
+                self._stop_locked(interrupted=False)
             if self._recorder.last_bag_dir is None:
                 raise RuntimeError("there is no episode to discard")
             bag_dir = self._recorder.mark_discarded()
@@ -176,6 +271,8 @@ class CollectorController:
                 raise ValueError("数据编号已变化，请刷新后评价当前数据")
             if quality not in QUALITY_LABELS:
                 raise ValueError(f"未知数据质量：{quality}")
+            if self._last_state.get("auto_stop_reason") and quality not in {"报错", "放弃"}:
+                raise ValueError("自动连续性失败仅允许归类为报错或放弃")
             if self._phase == "DISCARDED" and quality != "放弃":
                 raise ValueError("该数据已弃用，不能通过质量评价恢复")
             if quality == "放弃":
@@ -195,7 +292,7 @@ class CollectorController:
         if command == "start":
             return self.start()
         if command == "stop":
-            return self.stop()
+            return self.request_stop() if self._monitor is not None else self.stop()
         if command == "discard":
             return self.discard()
         if command == "mark_milestone":

@@ -10,6 +10,18 @@ from adapters.litchibot.validation_safety import load_permit,MotionLatch,RawCont
 from adapters.litchibot.retarget import JOINT_NAMES
 
 
+def test_native_speed_policy_only_constructs_for_ordinary_managed_manus():
+    from adapters.litchibot.validation_safety import ManusNormalMotionLatch
+    options=dict(source='manus',gui_controlled=True,validation_only=False)
+    latch=ManusNormalMotionLatch(permit(),time.monotonic(),**options)
+    assert not latch.limit_output_slew and latch.phase=='WARMUP'
+    assert not any(latch.requested.values())
+    assert MotionLatch(permit(),time.monotonic()).limit_output_slew
+    for patch in ({'source':'litchibot'},{'gui_controlled':False},{'validation_only':True}):
+        with pytest.raises(ValueError,match='ordinary managed MANUS'):
+            ManusNormalMotionLatch(permit(),time.monotonic(),**(options|patch))
+
+
 def permit():
     return {'mode':'supervised_hardware_validation','operator':'test only','sop_reference':'test SOP',
         'adult_qualified_operator':True,'sop_reviewed':True,'physical_estop_checked':True,

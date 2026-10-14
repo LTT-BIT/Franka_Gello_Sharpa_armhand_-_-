@@ -27,8 +27,25 @@ class StreamWindow:
     sample_count: int = 0
     reset_count: int = 0
     worst_gap_sec: float = 0.0
+    require_source_timestamps: bool = False
+    last_source_ns: int | None = None
+    first_source_ns: int | None = None
+    source_reset_count: int = 0
 
-    def observe(self, now: float, *, max_gap_sec: float) -> None:
+    def observe(self, now: float, *, max_gap_sec: float, header_ns: int | None = None) -> None:
+        if self.require_source_timestamps:
+            previous = self.last_source_ns
+            self.last_source_ns = header_ns
+            if header_ns is None or header_ns <= 0:
+                self.source_reset_count += 1
+                self._reset(now, count_reset=True)
+                self.first_time = self.last_time = None
+                self.last_source_ns = self.first_source_ns = None
+                return
+            if previous is not None and (header_ns <= previous or (header_ns - previous) / 1e9 > max_gap_sec):
+                self.source_reset_count += 1
+                self._reset(now, count_reset=True)
+                return
         if self.last_time is None:
             self._reset(now, count_reset=False)
             return
@@ -57,6 +74,7 @@ class StreamWindow:
         return (
             duration_sec >= stable_sec
             and self.frequency_hz >= self.min_frequency_hz
+            and (not self.require_source_timestamps or self.source_frequency_hz >= self.min_frequency_hz)
         )
 
     @property
@@ -72,6 +90,12 @@ class StreamWindow:
             return 0.0
         return (self.sample_count - 1) / duration_sec
 
+    @property
+    def source_frequency_hz(self) -> float:
+        if self.first_source_ns is None or self.last_source_ns is None or self.last_source_ns <= self.first_source_ns:
+            return 0.0
+        return (self.sample_count - 1) * 1e9 / (self.last_source_ns - self.first_source_ns)
+
     def describe(self, now: float, *, max_gap_sec: float) -> str:
         if self.last_time is None:
             return "no frames"
@@ -82,10 +106,12 @@ class StreamWindow:
             f"age={age_sec * 1000:.1f} ms, "
             f"worst_gap={self.worst_gap_sec * 1000:.1f} ms, "
             f"resets={self.reset_count}{stale}"
+            + (f", source={self.source_frequency_hz:.2f} Hz, source_resets={self.source_reset_count}" if self.require_source_timestamps else "")
         )
 
     def _reset(self, now: float, *, count_reset: bool) -> None:
         self.first_time = now
+        self.first_source_ns = self.last_source_ns
         self.last_time = now
         self.sample_count = 1
         if count_reset:
@@ -97,6 +123,7 @@ def wait_for_streams(
     timeout_sec: float,
     stable_sec: float,
     max_gap_ms: float,
+    require_source_timestamps: bool = False,
 ) -> int:
     import rclpy
     from rclpy.qos import (
@@ -109,7 +136,7 @@ def wait_for_streams(
 
     max_gap_sec = max_gap_ms / 1000.0
     windows = {
-        topic: StreamWindow(topic, min_frequency_hz)
+        topic: StreamWindow(topic, min_frequency_hz, require_source_timestamps=require_source_timestamps)
         for topic, min_frequency_hz in CAMERA_STREAMS
     }
     qos = QoSProfile(
@@ -125,7 +152,15 @@ def wait_for_streams(
     for topic, window in windows.items():
 
         def callback(_message: bytes, *, stream: StreamWindow = window) -> None:
-            stream.observe(time.monotonic(), max_gap_sec=max_gap_sec)
+            header_ns = None
+            if require_source_timestamps:
+                from .image_metadata import read_image_metadata
+                try:
+                    metadata = read_image_metadata(_message)
+                    header_ns = metadata.header_time_ns if metadata is not None else None
+                except ValueError:
+                    pass
+            stream.observe(time.monotonic(), max_gap_sec=max_gap_sec, header_ns=header_ns)
 
         subscriptions.append(
             node.create_subscription(Image, topic, callback, qos, raw=True)
@@ -252,6 +287,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     wait_parser = subparsers.add_parser("wait")
+    wait_parser.add_argument("--require-source-timestamps", action="store_true")
     wait_parser.add_argument("--timeout-sec", type=float, default=90.0)
     wait_parser.add_argument("--stable-sec", type=float, default=DEFAULT_STABLE_SEC)
     wait_parser.add_argument("--max-gap-ms", type=float, default=DEFAULT_MAX_GAP_MS)
@@ -271,6 +307,7 @@ def main(argv: list[str] | None = None) -> None:
                 timeout_sec=args.timeout_sec,
                 stable_sec=args.stable_sec,
                 max_gap_ms=args.max_gap_ms,
+                require_source_timestamps=args.require_source_timestamps,
             )
         )
     raise SystemExit(validate_bag(args.bag))

@@ -1,6 +1,7 @@
 teleop_data_collector:
   ros__parameters:
     bag_contract_version: 1
+    continuity_enabled: true
     teleoperator: gello
     workcell_id: gello-dual-fr3-sharpa-tactile
     workcell_config_hash: REPLACE_AT_LAUNCH

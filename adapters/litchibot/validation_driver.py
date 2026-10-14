@@ -133,6 +133,9 @@ def main(argv=None):
     class GuardedSharpaDriverNode(SharpaDriverNode):
         def __init__(self):
             latch_type=MotionLatch
+            if config and config['source']=='manus' and config['mode'] in ('normal','fake'):
+                from adapters.litchibot.validation_safety import ManusNormalMotionLatch
+                latch_type=ManusNormalMotionLatch
             if config and config['source']=='litchibot' and config['mode'] in ('normal','fake'):
                 from adapters.litchibot.normal_control import NormalHandAuthority
                 latch_type=NormalHandAuthority
@@ -180,8 +183,16 @@ def main(argv=None):
                         for side,hand in self._hands.items():
                             hand.stop();self.needs_enable.add(side.value)
                 self.guard_timer=self.create_timer(0.01,self.service_guard)
+                if config and config['source']=='manus':
+                    from adapters.litchibot.full_tactile import FullTactilePublisher
+                    self.full_tactile=FullTactilePublisher(self)
             except Exception:
                 self.destroy_node();raise
+
+        def _publish_tactile(self):
+            worker=getattr(self,'full_tactile',None)
+            if worker is None:return super()._publish_tactile()
+            worker.poll()
 
         def stop_validation(self,reason):
             self.latch.trip(reason)
@@ -365,6 +376,7 @@ def main(argv=None):
                     else:node.stop_validation('Validation process shutdown')
                 finally:
                     try:
+                        if getattr(node,'full_tactile',None):node.full_tactile.close()
                         if node.full:node.full.close()
                     finally:
                         if normal and shutdown is not None:Node.destroy_node(node)

@@ -86,3 +86,43 @@ def test_wrist_cameras_use_640x480_30hz_rgb_only():
         30,
     )
     assert params["enable_depth"] is False
+
+
+def test_cam1_global_repair_is_isolated_from_other_camera_profiles():
+    root = REPO_ROOT / "ros_ws/src/teleop_camera_bringup/config"
+    original = yaml.safe_load((root / "camera_secondary_params.yaml").read_text())
+    repaired = yaml.safe_load((root / "camera_cam1_global_params.yaml").read_text())
+    assert repaired["time_domain"] == "global"
+    assert repaired["enable_sync_host_time"] is False
+    assert repaired["enable_frame_timestamp_csv"] is True
+    assert repaired["color_format"] == "YUYV"
+    assert original["color_format"] == "ANY"
+    assert original["enable_sync_host_time"] is True
+    assert {k: v for k, v in repaired.items() if k not in {"enable_sync_host_time", "enable_frame_timestamp_csv", "color_format"}} == {
+        k: v for k, v in original.items() if k not in {"enable_sync_host_time", "color_format"}}
+    for name in ("cameras.yaml", "cameras.yaml.example"):
+        cameras = yaml.safe_load((REPO_ROOT / "data_collection/config" / name).read_text())["camera_bringup"]
+        assert cameras["cam1"]["config_file"] == "camera_cam1_global_params.yaml"
+        assert cameras["cam2"]["config_file"] == "camera_secondary_params.yaml"
+        assert cameras["cam0"]["config_file"] == "camera_primary_params.yaml"
+
+
+def test_timestamp_diagnostics_are_unique_persistent_and_do_not_modify_source(tmp_path):
+    import importlib.util
+    path = REPO_ROOT / "ros_ws/src/teleop_camera_bringup/launch/triple_camera.launch.py"
+    spec = importlib.util.spec_from_file_location("camera_launch_diagnostics", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    source = REPO_ROOT / "ros_ws/src/teleop_camera_bringup/config/camera_cam1_global_params.yaml"
+    before = source.read_text()
+    first = module._prepare_camera_parameters(source, "cam1", tmp_path)
+    second = module._prepare_camera_parameters(source, "cam1", tmp_path)
+    assert first != second
+    params = yaml.safe_load(first.read_text())
+    assert params["enable_sync_host_time"] is False
+    assert params["time_domain"] == "global"
+    assert str(tmp_path) in params["frame_timestamp_csv_file"]
+    assert params["frame_timestamp_csv_file"] != yaml.safe_load(second.read_text())["frame_timestamp_csv_file"]
+    assert source.read_text() == before
+    cam2 = source.parent / "camera_secondary_params.yaml"
+    assert module._prepare_camera_parameters(cam2, "cam2", tmp_path) == cam2

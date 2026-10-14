@@ -10,7 +10,7 @@ camera_bringup:
   cam1:
     serial_number: REPLACE_CAM1_SERIAL
     semantic: REPLACE_CAM1_SEMANTIC
-    config_file: camera_secondary_params.yaml
+    config_file: camera_cam1_global_params.yaml
     start_delay_sec: 2.0
   cam2:
     serial_number: REPLACE_CAM2_SERIAL

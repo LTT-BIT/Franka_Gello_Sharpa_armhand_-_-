@@ -389,3 +389,190 @@ def test_collector_control_server_accepts_line_delimited_local_json(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=1.0)
+
+
+def _monitored_controller(tmp_path, monkeypatch, *, gate=None, timeout=False):
+    import threading
+    import subprocess
+    from teleop_data_collector.continuity import ContinuityMonitor
+
+    node = _Node([])
+    node.continuity_monitor = ContinuityMonitor(["/cam1/color/image_raw"])
+    signals = []
+    entered = threading.Event()
+
+    class Process:
+        returncode = 0
+        exited = False
+        waits = 0
+
+        def poll(self):
+            return self.returncode if self.exited else None
+
+        def wait(self, **kwargs):
+            entered.set()
+            self.waits += 1
+            if timeout and self.waits < 3:
+                raise subprocess.TimeoutExpired("rosbag", 1)
+            if gate is not None:
+                assert gate.wait(3)
+            self.exited = True
+            return self.returncode
+
+    def popen(command, **kwargs):
+        bag = Path(command[command.index("--output") + 1])
+        bag.mkdir()
+        (bag / "metadata.yaml").write_text("rosbag2_bagfile_information: {}\n")
+        return Process()
+
+    monkeypatch.setattr(rosbag_recording_node.shutil, "which", lambda _: "/usr/bin/ros2")
+    monkeypatch.setattr(rosbag_recording_node.subprocess, "Popen", popen)
+    monkeypatch.setattr(rosbag_recording_node, "_signal_process_group", lambda process, sig: signals.append(sig))
+    recorder = rosbag_recording_node.RosbagEpisodeRecorder(node, tmp_path, "episode", (), 30, (), postflight=lambda _: ((), {}))
+    controller = CollectorController(node, recorder, quality_dir=tmp_path / "quality")
+    controller.set_ready()
+    controller.start()
+    return controller, recorder, node.continuity_monitor, signals, entered
+
+
+def _severe_gap(monitor):
+    monitor.observe("/cam1/color/image_raw", 1_000_000_000, 0)
+    monitor.observe("/cam1/color/image_raw", 1_133_333_333, .133333333)
+
+
+def test_auto_stop_keeps_controller_alive_and_restarts_on_next_start(tmp_path, monkeypatch):
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch)
+    _severe_gap(monitor)
+    controller.check_continuity()
+    controller._worker.join(3)
+    assert not controller._worker.is_alive()
+    status = controller.status()
+    assert status["quality"] == "报错"
+    assert status["quality_pending"] is False
+    assert status["state"] == "INCOMPLETE"
+    assert status["can_start"] and not status["active"]
+    state = json.loads((recorder.last_bag_dir / "collection_state.json").read_text())
+    assert not state["finalized"] and state["auto_stop_reason"]
+    assert state["live_continuity"]["streams"]["/cam1/color/image_raw"]["estimated_missing_frames_max_run"] == 3
+    assert len(signals) == 1
+    with pytest.raises(ValueError, match="报错或放弃"):
+        controller.rate_quality(recorder.last_bag_dir.name, "优等")
+    first = recorder.last_bag_dir
+    controller.start()
+    assert recorder.current_bag_dir != first
+    assert controller.status()["auto_stop_reason"] is None
+    assert controller.status()["alerts"] == []
+    controller.stop()
+
+
+def test_status_remains_responsive_and_stop_races_are_idempotent(tmp_path, monkeypatch):
+    import threading
+    gate = threading.Event()
+    controller, recorder, monitor, signals, entered = _monitored_controller(tmp_path, monkeypatch, gate=gate)
+    _severe_gap(monitor)
+    controller.check_continuity()
+    assert entered.wait(2)
+    assert controller.status()["state"] == "STOPPING"
+    assert not controller.status()["can_stop"]
+    assert not controller.status()["can_start"]
+    assert not controller.status()["can_mark_milestone"]
+    controller.dispatch("stop")
+    shutdown = threading.Thread(target=lambda: controller.stop_if_present(interrupted=True))
+    shutdown.start()
+    gate.set()
+    controller._worker.join(3)
+    shutdown.join(3)
+    assert not shutdown.is_alive()
+    assert len(signals) == 1
+    assert controller.status()["quality"] == "报错"
+
+
+def test_manual_tactile_stop_is_async(tmp_path, monkeypatch):
+    import threading
+    gate = threading.Event()
+    controller, recorder, monitor, signals, entered = _monitored_controller(tmp_path, monkeypatch, gate=gate)
+    assert controller.dispatch("stop")["state"] == "STOPPING"
+    assert entered.wait(2)
+    assert controller.status()["active"]
+    gate.set()
+    controller._worker.join(3)
+    assert controller.status()["quality_pending"]
+    assert controller.status()["auto_stop_reason"] is None
+    assert len(signals) == 1
+
+
+def test_auto_quality_write_failure_is_retryable(tmp_path, monkeypatch):
+    from teleop_data_collector import collector_control
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch)
+    original = collector_control.save_quality
+    monkeypatch.setattr(collector_control, "save_quality", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+    _severe_gap(monitor)
+    controller.check_continuity()
+    controller._worker.join(3)
+    assert controller.status()["quality_pending"]
+    assert not controller.status()["can_start"]
+    assert controller.status()["auto_stop_reason"]
+    with pytest.raises(RuntimeError, match="先保存"):
+        controller.start()
+    monkeypatch.setattr(collector_control, "save_quality", original)
+    controller.rate_quality(recorder.last_bag_dir.name, "报错")
+    assert controller.status()["can_start"]
+
+
+def test_auto_failure_survives_stop_timeout_and_revalidation(tmp_path, monkeypatch):
+    from teleop_data_collector.revalidate_bag import revalidate_bag
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch, timeout=True)
+    _severe_gap(monitor)
+    controller.check_continuity()
+    controller._worker.join(3)
+    assert len(signals) == 3
+    bag = recorder.last_bag_dir
+    state = json.loads((bag / "collection_state.json").read_text())
+    # Revalidation uses a real contract; source-complete rescan cannot clear a live fault.
+    state["source_topic_contract"] = {"cam1": {"topic": "/cam1/color/image_raw", "type": "sensor_msgs/msg/Image"}}
+    (bag / "collection_state.json").write_text(json.dumps(state))
+    result = revalidate_bag(bag, inspect=lambda *args, **kwargs: ((), {}))
+    assert not result["finalized"]
+    assert result["auto_stop_reason"]
+    assert result["failures"]
+
+
+def test_shutdown_winning_auto_stop_race_still_preserves_incomplete_state(tmp_path, monkeypatch):
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch)
+    _severe_gap(monitor)
+    controller.stop_if_present(interrupted=True)
+    state = json.loads((recorder.last_bag_dir / "collection_state.json").read_text())
+    assert state["state"] == "incomplete"
+    assert not state["finalized"] and state["auto_stop_reason"]
+    assert controller.status()["quality"] == "报错"
+    assert len(signals) == 1
+
+
+def test_real_ros_logger_warning_to_error_does_not_kill_auto_stop(tmp_path, monkeypatch, capfd):
+    from rclpy.logging import get_logger
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller._node.logger = get_logger("continuity_logger_transition")
+    monitor.observe("/cam1/color/image_raw", 1_000_000_000, 0)
+    monitor.observe("/cam1/color/image_raw", 1_066_666_667, .066667)
+    controller.check_continuity()  # actual ROS warning at the production call site
+    monitor.observe("/cam1/color/image_raw", 1_200_000_000, .2)
+    controller.check_continuity()  # actual ROS error must use a different call site
+    controller._worker.join(3)
+    assert controller.status()["quality"] == "报错"
+    assert len(signals) == 1
+    assert "diagnostic logging failed" not in capfd.readouterr().err
+
+
+def test_diagnostic_logging_failure_cannot_prevent_scheduling_stop(tmp_path, monkeypatch):
+    controller, recorder, monitor, signals, _ = _monitored_controller(tmp_path, monkeypatch)
+    _severe_gap(monitor)
+    original = controller._node.logger.error
+    def fail_diagnostic(message):
+        if message.startswith("/cam1/"):
+            raise ValueError("logger failure")
+        original(message)
+    monkeypatch.setattr(controller._node.logger, "error", fail_diagnostic)
+    controller.check_continuity()
+    controller._worker.join(3)
+    assert not recorder.active
+    assert len(signals) == 1

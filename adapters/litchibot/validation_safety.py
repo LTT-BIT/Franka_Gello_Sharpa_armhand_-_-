@@ -116,6 +116,7 @@ class RawContinuityGate:
 
 class MotionLatch:
     """Both-hand latched stop; restart required after any trip or deadman release."""
+    limit_output_slew = True
     def __init__(self, permit, now, *, gui_controlled=False, source='litchibot',validation_only=True):
         self.permit = permit
         self.phase = 'WARMUP'
@@ -172,7 +173,11 @@ class MotionLatch:
         if self.validation_only or not self.gui_controlled:
             raise ValueError('Soft recovery only belongs to managed normal mode')
         if self.phase=='FAULT':return
-        self.phase='RECOVERING';self.reason=str(reason)
+        # A cold source anomaly before either hand can be enabled must restart
+        # acquisition, not impose a running-command deadline on an absent side.
+        # Keep the original 30 s acquisition deadline and all frame checks.
+        acquiring=self.phase=='WARMUP'
+        self.phase='WARMUP' if acquiring else 'RECOVERING';self.reason=str(reason)
         self.recovery_started=time.monotonic()
         self.requested={'left':False,'right':False}
         self.samples={'left':0,'right':0}
@@ -251,7 +256,7 @@ class MotionLatch:
                 raise ValueError('Acceptance excursion exceeds 0.15 rad')
             actual = self.commanded.get(side)
             base,dt = (actual[0],min(0.05,now-actual[1])) if actual else (measured,1/30)
-            if np.abs(q-base).max()>SPEED_RAD_S*dt+1e-8:
+            if self.limit_output_slew and np.abs(q-base).max()>SPEED_RAD_S*dt+1e-8:
                 raise ValueError('Hardware command slew/acquisition exceeded')
         elif (not self.gui_controlled or self.requested[side]) and np.abs(q-measured).max()>EXCURSION_RAD:
             raise ValueError('Acquisition target is too far from measured pose')
@@ -262,7 +267,19 @@ class MotionLatch:
             recovered=self.phase=='RECOVERING'
             self.phase = 'READY'
             if recovered:self.reason='Recovered stable input; GUI Start hand required again'
+            elif self.reason.startswith('Waiting for stable Manus input:'):
+                self.reason='Stable Manus input acquired; GUI Start hand required'
         self.watch(now,time.time())
         if forwarding and self.phase=='ARMED':
             self.commanded[side]=(q.copy(),now)
         return forwarding and self.phase=='ARMED'
+
+
+class ManusNormalMotionLatch(MotionLatch):
+    """Ordinary MANUS uses the native Sharpa speed setting, like Terminal 2."""
+    limit_output_slew = False
+
+    def __init__(self,*args,**kwargs):
+        if kwargs.get('source')!='manus' or kwargs.get('validation_only') is not False or kwargs.get('gui_controlled') is not True:
+            raise ValueError('Native-speed MANUS policy requires ordinary managed MANUS mode')
+        super().__init__(*args,**kwargs)

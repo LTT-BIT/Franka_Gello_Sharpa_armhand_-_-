@@ -134,10 +134,12 @@ class QualityDialog(QDialog):
 
     def update_status(self, status: dict) -> None:
         self.discarded = status.get("state") == "DISCARDED"
+        self.auto_failed = bool(status.get("auto_stop_reason"))
         state = str(status.get("state") or "UNKNOWN")
         result = {"FINALIZED": "校验通过", "INCOMPLETE": "校验未通过",
                   "INTERRUPTED": "采集中断", "DISCARDED": "已弃用"}.get(state, state)
         details = list(status.get("failures") or [])
+        details += list(status.get("source_warnings") or [])
         details += list(status.get("boundary_warnings") or [])
         details += list(status.get("transport_warnings") or [])
         text = f"核验结果：{result}"
@@ -153,7 +155,8 @@ class QualityDialog(QDialog):
     def set_available(self, available: bool) -> None:
         for label, button in self.buttons.items():
             button.setEnabled(available and self.selected_quality is None
-                              and (not self.discarded or label == "放弃"))
+                              and (not self.discarded or label == "放弃")
+                              and (not self.auto_failed or label in {"报错", "放弃"}))
 
 
 class OperatorWindow(QMainWindow):
@@ -195,6 +198,10 @@ class OperatorWindow(QMainWindow):
         self.collection_status: dict = {}
         self.quality_dialog: QualityDialog | None = None
         self.quality_prompted: set[str] = set()
+        self.continuity_dialog: QDialog | None = None
+        self.continuity_message: QLabel | None = None
+        self.continuity_notice_keys: set[tuple] = set()
+        self.continuity_episode_key: tuple | None = None
 
         self.socket = QTcpSocket(self)
         self.socket.readyRead.connect(self._read_responses)
@@ -268,6 +275,7 @@ class OperatorWindow(QMainWindow):
         collection_layout = QHBoxLayout(collection_box)
         self.collection_status_label = QLabel("OFFLINE — 请启动采集终端")
         self.collection_status_label.setMinimumWidth(330)
+        self.collection_status_label.setWordWrap(True)
         self.collection_status_label.setStyleSheet(
             "color: #777; font-weight: bold;"
         )
@@ -1017,16 +1025,33 @@ class OperatorWindow(QMainWindow):
         if markers:
             detail += f" · 已标记 {len(markers)} 个完成点"
         failures = list(status.get("failures") or [])
-        warnings = len(status.get("boundary_warnings") or []) + len(
+        warnings = len(status.get("source_warnings") or []) + len(status.get("boundary_warnings") or []) + len(
             status.get("transport_warnings") or []
         )
         if failures:
             detail += f" · {len(failures)} failure(s)"
         elif warnings:
             detail += f" · {warnings} warning(s)"
+        alerts = status.get("alerts") or []
+        if status.get("auto_stop_reason"):
+            detail += " · 本段已停止，正在收尾" if state in {"STOPPING", "VALIDATING"} else (
+                " · 已归类为报错，可再次踩踏板开始" if status.get("quality") == "报错" else " · 请保存报错或放弃分类")
+        elif alerts:
+            latest = max(alerts, key=lambda a: a.get("id", 0))
+            detail += " · 预警：" + self._continuity_alert_text(latest)
+            if state == "RECORDING":
+                detail += " · 录制继续"
+        self.collection_status_label.setToolTip("\n".join(self._continuity_alert_text(a) for a in alerts))
         self.collection_status_label.setText(f"{state}{detail}")
-        if state == "RECORDING":
+        self._update_continuity_alerts(status)
+        if state == "RECORDING" and alerts and not status.get("auto_stop_reason"):
+            style = "color: #a35b00; font-weight: bold;"
+        elif state == "RECORDING":
             style = "color: #c22525; font-weight: bold;"
+        elif status.get("auto_stop_reason"):
+            style = "color: #c22525; font-weight: bold;"
+        elif alerts:
+            style = "color: #a35b00; font-weight: bold;"
         elif state in {"READY", "FINALIZED"}:
             style = "color: #248a3d; font-weight: bold;"
         elif state in {"INCOMPLETE", "INTERRUPTED", "DISCARDED"}:
@@ -1065,6 +1090,74 @@ class OperatorWindow(QMainWindow):
         episode = status.get("last_episode")
         if status.get("quality_pending") and episode and episode not in self.quality_prompted:
             self._open_quality_dialog()
+
+    @staticmethod
+    def _continuity_alert_text(alert: dict) -> str:
+        text = f"{alert.get('topic')}: {alert.get('message')}"
+        if alert.get("gap_ms") is not None:
+            text += f"，间隔 {alert['gap_ms']:.1f} ms"
+        if alert.get("estimated_missing_frames") is not None:
+            kind = "本次间隔估算缺帧" if alert.get("kind") == "missing_frames" else "本次间隔缺失 30 Hz 时间步"
+            text += f"，{kind} {alert['estimated_missing_frames']}"
+        return text
+
+    def _update_continuity_alerts(self, status: dict) -> None:
+        # Warnings stay in the collection strip. Show the error dialog only
+        # after finalization, independently of confirmation from the operator.
+        alerts = [a for a in (status.get("alerts") or []) if a.get("severity") == "failure"]
+        reason = status.get("auto_stop_reason")
+        if reason and not any(a.get("id") == reason.get("id") for a in alerts):
+            alerts.append(reason)
+        if not alerts or status.get("active") or status.get("state") in {"RECORDING", "STOPPING", "VALIDATING"}:
+            if self.continuity_dialog is not None:
+                self.continuity_dialog.close()
+            return
+        episode_key = (alerts[0].get("session_id"), alerts[0].get("episode"))
+        if self.continuity_episode_key != episode_key:
+            if self.continuity_dialog is not None:
+                self.continuity_dialog.close()
+            self.continuity_episode_key = episode_key
+            self.continuity_notice_keys.clear()
+        keys = {(*episode_key, a.get("topic"), a.get("category"), a.get("severity")) for a in alerts}
+        fresh = keys - self.continuity_notice_keys
+        self.continuity_notice_keys.update(keys)
+        if self.continuity_dialog is None and fresh:
+            dialog = QDialog(self, Qt.Window | Qt.WindowDoesNotAcceptFocus)
+            dialog.setWindowModality(Qt.NonModal)
+            dialog.setAttribute(Qt.WA_ShowWithoutActivating)
+            dialog.setMinimumWidth(560)
+            layout = QVBoxLayout(dialog)
+            label = QLabel()
+            label.setTextFormat(Qt.PlainText)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(dialog.close)
+            layout.addWidget(buttons)
+            self.continuity_dialog = dialog
+            self.continuity_message = label
+            dialog.finished.connect(lambda: self._continuity_dialog_closed(dialog))
+            dialog.show()
+        if self.continuity_dialog is None:
+            return
+        self.continuity_dialog.setWindowTitle("录制已因连续性错误停止")
+        self.continuity_message.setStyleSheet("color: #c22525;")
+        lines = [f"数据编号：{episode_key[1]}"]
+        lines.append("本段已归类为报错，可再次踩 L 踏板开始。" if status.get("quality") == "报错"
+                     else "本段失败，请保存报错或放弃分类后重新开始。")
+        for alert in sorted(alerts, key=lambda a: (a.get("severity") != "failure", a.get("topic", "")))[:12]:
+            text = self._continuity_alert_text(alert)
+            text += f"（该类事件 {alert.get('count', 1)} 次；次数不作为退出阈值）"
+            lines.append(text)
+        if len(alerts) > 12:
+            lines.append(f"另有 {len(alerts) - 12} 项，详见 collection_state.json。")
+        self.continuity_message.setText("\n".join(lines))
+
+    def _continuity_dialog_closed(self, dialog: QDialog) -> None:
+        if self.continuity_dialog is dialog:
+            self.continuity_dialog = None
+            self.continuity_message = None
+        dialog.deleteLater()
 
     def closeEvent(self, event) -> None:
         if self.full_config:
@@ -1163,7 +1256,7 @@ class OperatorWindow(QMainWindow):
                 self._hand_event(f'{side}: {state}: '+data['reason'])
             button.blockSignals(True);button.setChecked(permit)
             button.setText(('Stop hand' if permit else 'Start hand')+f' [{state}]')
-            button.setEnabled((state not in ('FAULT','HARD_FAULT','OFFLINE','RECOVERING')) and (state!='SOFT_HOLD' or permit))
+            button.setEnabled((state not in ('FAULT','HARD_FAULT','OFFLINE','RECOVERING')) and (state!='SOFT_HOLD' or permit) and (permit or data.get('can_engage',True)))
             button.setToolTip('Supervisor state: '+state+' | '+str(data.get('reason') or status.get('reason','')))
             button.blockSignals(False)
         if self.full_config and self.full_config['mode']=='supervised_hardware_validation':

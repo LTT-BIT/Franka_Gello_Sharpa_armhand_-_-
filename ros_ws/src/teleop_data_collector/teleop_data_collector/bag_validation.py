@@ -144,6 +144,7 @@ def timing_failures(
     *,
     min_frequency_hz: float,
     max_gap_ms: float,
+    boundary_gap_ms: float | None = None,
     trim_start_sec: float = 0.0,
     trim_end_sec: float = 0.0,
 ) -> list[str]:
@@ -176,7 +177,7 @@ def timing_failures(
     # Allow one nominal source period at either edge because an asynchronous
     # stream can legitimately cross the boundary between two samples.
     nominal_period_ms = 1_000.0 / min_frequency_hz if min_frequency_hz > 0 else 0.0
-    base_boundary_allowance_ms = max_gap_ms + nominal_period_ms
+    base_boundary_allowance_ms = (max_gap_ms if boundary_gap_ms is None else boundary_gap_ms) + nominal_period_ms
     bag = report["bag_timing"]
     for field_name, trim_sec in (
         ("leading_gap_ms", trim_start_sec),
@@ -287,6 +288,7 @@ def inspect_bag(
     *,
     trim_start_sec: float = 0.0,
     trim_end_sec: float = 0.0,
+    continuity_enabled: bool = False,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     """Read every recorded message and return completeness failures/report."""
     import rosbag2_py
@@ -294,6 +296,10 @@ def inspect_bag(
     from rosidl_runtime_py.utilities import get_message
 
     configured = {item.topic: item for item in topic_contracts}
+    from .continuity import ContinuityMonitor, policy_for_topic
+    continuity = ContinuityMonitor([item.topic for item in configured.values() if item.required]) if continuity_enabled else None
+    if continuity is not None:
+        continuity.begin(bag_path.name, 0.0)
     reader = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(
@@ -334,9 +340,13 @@ def inspect_bag(
             else:
                 header_ns = message.header_time_ns
         except ValueError as error:
+            if continuity is not None:
+                continuity.invalid(topic, str(error), bag_time_ns / 1e9)
             if len(content_failures) < 100:
                 content_failures.append(f"{topic}: {error}")
             continue
+        if continuity is not None:
+            continuity.observe_message(topic, message, header_ns, bag_time_ns / 1e9)
         if header_ns is not None:
             stream.header_times_ns.append(header_ns)
         try:
@@ -449,7 +459,8 @@ def inspect_bag(
                     item.topic,
                     report,
                     min_frequency_hz=float(item.min_frequency_hz),
-                    max_gap_ms=float(item.max_gap_ms),
+                    max_gap_ms=float("inf") if continuity_enabled else float(item.max_gap_ms),
+                    boundary_gap_ms=float(item.max_gap_ms),
                     trim_start_sec=trim_start_sec,
                     trim_end_sec=trim_end_sec,
                 )
@@ -475,9 +486,10 @@ def inspect_bag(
                     name=name,
                     engagement=engagement_samples[f"arm:{side}"],
                     action_times=streams[name].header_times_ns,
-                    max_gap_ms=float(arm_policy.max_gap_ms),
+                    max_gap_ms=policy_for_topic(VALIDATED_COMMAND_TOPIC).failure_gap_ms if continuity_enabled else float(arm_policy.max_gap_ms),
                     window_start_ns=source_effective_start_ns,
                     window_end_ns=source_effective_end_ns,
+                    allow_never_engaged=continuity_enabled,
                 )
             )
 
@@ -531,7 +543,11 @@ def inspect_bag(
             "hand state velocity provenance is not exclusively finite_difference"
         )
 
+    continuity_report = continuity.end() if continuity is not None else {}
+    failures.extend(continuity_report.get("failures", []))
     report = {
+        "continuity": continuity_report,
+        "source_warnings": continuity_report.get("source_warnings", []),
         "bag_start_time_ns": global_start_ns,
         "bag_end_time_ns": global_end_ns,
         "source_start_time_ns": global_source_start_ns,
@@ -746,6 +762,7 @@ def _engaged_action_failures(
     max_gap_ms: float,
     window_start_ns: int | None = None,
     window_end_ns: int | None = None,
+    allow_never_engaged: bool = False,
 ) -> list[str]:
     """Require fresh actions only while the corresponding side is engaged."""
     if not engagement:
@@ -757,7 +774,7 @@ def _engaged_action_failures(
         and _timestamp_in_window(timestamp, window_start_ns, window_end_ns)
     ]
     if not engaged_times:
-        return [f"{name}: side was never engaged during the episode"]
+        return [] if allow_never_engaged else [f"{name}: side was never engaged during the episode"]
     if not action_times:
         return [f"{name}: no messages while side was engaged"]
 

@@ -460,3 +460,79 @@ def test_backend_crash_displays_disconnect_and_reconnects_safely(tmp_path):
         if backend.is_alive():
             backend.terminate()
         backend.join(timeout=2.0)
+
+
+def test_continuity_alerts_are_nonmodal_deduplicated_and_pedal_can_restart():
+    from PySide6.QtCore import Qt
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow("127.0.0.1", _unused_port())
+    try:
+        window.socket.abort()
+        window.collection_socket.abort()
+        window.collection_pending.clear()
+        alert = {"id": 1, "session_id": "collector", "episode": "episode7", "topic": "/cam1/color/image_raw",
+                 "severity": "warning", "category": "source", "kind": "missing_frames",
+                 "message": "source 缺帧", "gap_ms": 66.7, "estimated_missing_frames": 1, "count": 1}
+        status = {"state": "RECORDING", "active": True, "current_episode": "episode7", "can_stop": True,
+                  "can_mark_milestone": True, "alerts": [alert]}
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+        assert "预警" in window.collection_status_label.text()
+        assert "本次间隔估算缺帧 1" in window.collection_status_label.text()
+        assert "录制继续" in window.collection_status_label.text()
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+        alert.update(id=2, count=5)
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+        assert window.collection_record_button.isEnabled()
+        # Even a failure does not pop up until the episode has stopped.
+        alert.update(id=3, severity="failure", gap_ms=133.3, estimated_missing_frames=3)
+        status.update(state="STOPPING", can_stop=False, can_mark_milestone=False, auto_stop_reason=alert)
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+        assert not window.collection_record_button.isEnabled()
+        assert "正在收尾" in window.collection_status_label.text()
+        status.update(state="INCOMPLETE", active=False, current_episode=None, last_episode="episode7",
+                      can_start=True, quality="报错", quality_pending=False)
+        window._apply_collection_status(status)
+        assert window.collection_record_button.isEnabled()
+        assert window.quality_dialog is None
+        dialog = window.continuity_dialog
+        assert dialog is not None
+        assert dialog.windowModality() == Qt.NonModal
+        assert dialog.testAttribute(Qt.WA_ShowWithoutActivating)
+        assert dialog.windowFlags() & Qt.WindowDoesNotAcceptFocus
+        assert "本次间隔估算缺帧 3" in window.continuity_message.text()
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is dialog
+        assert "再次踩" in window.continuity_message.text()
+        dialog.close()
+        application.processEvents()
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+        sent = []
+        window._send_collection = lambda cmd, args=None: sent.append(cmd)
+        pedal = next(s for s in window.collection_shortcuts if s.key().toString() == "L")
+        pedal.activated.emit()
+        assert sent == ["start"]
+        status.update(state="RECORDING", active=True, current_episode="episode8", quality=None, can_start=False,
+                      can_stop=True, alerts=[], auto_stop_reason=None)
+        window._apply_collection_status(status)
+        assert window.continuity_dialog is None
+    finally:
+        window.close()
+
+
+def test_auto_failure_quality_dialog_only_allows_error_or_discard():
+    from apps.operator_gui.operator_gui import QualityDialog
+    application = QApplication.instance() or QApplication([])
+    dialog = QualityDialog({"state": "INCOMPLETE", "last_episode": "episode1", "can_rate_quality": True,
+                            "auto_stop_reason": {"category": "source"}})
+    try:
+        assert not dialog.buttons["优等"].isEnabled()
+        assert not dialog.buttons["一般"].isEnabled()
+        assert dialog.buttons["报错"].isEnabled()
+        assert dialog.buttons["放弃"].isEnabled()
+    finally:
+        dialog.close()

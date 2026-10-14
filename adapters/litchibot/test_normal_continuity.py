@@ -23,6 +23,31 @@ def row(sequence, value=0, side='left'):
     return p
 
 
+def test_manus_following_warns_repeated_steps_but_preserves_packet_and_extreme_checks():
+    from adapters.litchibot.normal_continuity import full_continuity_gate
+    gate=full_continuity_gate('manus','normal');gate.following=True
+    for seq in range(1,15):
+        p=row(seq);p['positions_rad'][18]=.4 if seq%2==0 else 0
+        assert gate.observe(p,p['source_received_monotonic_ns'])
+    assert not gate.events['left']
+    # Following does not allow replay, stale targets or invalid joint values.
+    with pytest.raises(ValueError,match='order'):gate.observe(p,p['source_received_monotonic_ns'])
+    p=row(15)
+    with pytest.raises(ValueError,match='Stale'):gate.observe(p,p['source_received_monotonic_ns']+300_000_000)
+    p=row(15);p['positions_rad'][10]=float('nan')
+    with pytest.raises(ValueError,match='finite'):gate.observe(p,p['source_received_monotonic_ns'])
+    p=row(15);p['positions_rad'][18]=1.5708
+    with pytest.raises(ValueError,match='Extreme'):gate.observe(p,p['source_received_monotonic_ns'])
+    # Standby still rejects observation steps; supervised mode stays strict.
+    for mode in ('normal','fake','supervised_hardware_validation'):
+        gate=full_continuity_gate('manus',mode)
+        p=row(1);assert gate.observe(p,p['source_received_monotonic_ns'])
+        p=row(2,.185)
+        if mode=='supervised_hardware_validation':
+            with pytest.raises(ValueError,match='discontinuity'):gate.observe(p,p['source_received_monotonic_ns'])
+        else:assert not gate.observe(p,p['source_received_monotonic_ns'])
+
+
 def test_isolated_step_and_return_are_rejected_then_stable():
     gate=NormalContinuityGate()
     for seq,value,accepted in [(1,0,True),(2,.185638,False),(3,0,False),(4,0,True)]:
@@ -141,10 +166,12 @@ def test_source_only_moderate_and_isolated_events_outside_repeat_window():
         assert gate.observe(p,p['source_received_monotonic_ns']) is (seq not in (2,113,224))
 
 
-def test_recovery_before_both_sides_acquired_still_times_out():
+def test_standby_pause_preserves_original_acquisition_timeout():
     now=time.monotonic()
     latch=MotionLatch({'session_token':'a'*64,'expires_unix_s':float('inf')},now,
                       gui_controlled=True,validation_only=False)
     latch.pause('Early moderate anomaly')
-    latch.watch(latch.recovery_started+.01,time.time());assert latch.phase=='RECOVERING'
-    latch.watch(latch.recovery_started+.201,time.time());assert latch.phase=='FAULT'
+    latch.watch(now+.201,time.time());assert latch.phase=='WARMUP'
+    assert latch.started==now and not any(latch.requested.values())
+    latch.watch(now+30.001,time.time());assert latch.phase=='FAULT'
+    assert latch.reason=='Acquisition timeout'

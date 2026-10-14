@@ -8,7 +8,7 @@ import numpy as np
 from .full_control import HandControlServer
 from .retarget import JOINT_NAMES
 from .transport import TargetGate
-from .validation_safety import RawContinuityGate,TIMEOUT_S,SPEED_RAD_S
+from .validation_safety import RawContinuityGate,TIMEOUT_S,SPEED_RAD_S,WARMUP_FRAMES
 from .fault_severity import PerSideMotionLatch, SoftHold, event, frame_context
 from .minimum_interference import MinimumMotionLatch, RejectFrame
 
@@ -19,7 +19,6 @@ class FullHandRuntime:
         from std_srvs.srv import SetBool,Trigger
         from sensor_msgs.msg import JointState
         from geometry_msgs.msg import PoseArray
-        from rclpy.qos import qos_profile_sensor_data
         self.node=node;self.config=config;self.latch=node.latch
         from .normal_continuity import full_continuity_gate
         self.raw=self.make_raw_gate(config)
@@ -31,6 +30,8 @@ class FullHandRuntime:
         self.delta_path=Path('/tmp')/('hand-deltas-'+config['token'][:16]+'.json')
         self.last_delta_at=0
         self.gate=self.make_target_gate(config)
+        if config['source']=='manus' and not self.latch.limit_output_slew:
+            node.get_logger().info('Normal MANUS: native Sharpa speed/current settings; extra 0.5 rad/s output ramp disabled')
         if isinstance(self.latch,MinimumMotionLatch):
             node.get_logger().info('Normal command path: added shared slew/acquisition clamp disabled; native driver/SDK limits unchanged')
         self.keypoints={s:{} for s in ('left','right')};self.pending={s:[] for s in ('left','right')}
@@ -48,8 +49,10 @@ class FullHandRuntime:
                     # Retain strict/history paths unchanged for other modes.
                     lambda msg,s=side:self.litchibot(s,msg),1 if getattr(self,'normal_path',False) else 1000))
             else:
+                # Full MANUS uses reliable source delivery and retains enough
+                # history for exact stamp validation despite callback ordering.
                 self.subscriptions.append(node.create_subscription(PoseArray,f'/manus/{side}/keypoints',
-                    lambda msg,s=side:self.keypoint(s,msg),qos_profile_sensor_data))
+                    lambda msg,s=side:self.keypoint(s,msg),100))
                 self.subscriptions.append(node.create_subscription(JointState,f'/teleop/sharpa/{side}/target',
                     lambda msg,s=side:self.manus(s,msg),1000))
         self.subscriptions.append(node.create_subscription(String,'/teleop/sharpa/source_fault',
@@ -64,7 +67,7 @@ class FullHandRuntime:
 
     def make_target_gate(self,config):
         return TargetGate(allow_dry_run=True,max_age_s=TIMEOUT_S,
-            max_speed_rad_s=None if isinstance(self.latch,MinimumMotionLatch) else SPEED_RAD_S)
+            max_speed_rad_s=None if isinstance(self.latch,MinimumMotionLatch) or not getattr(self.latch,'limit_output_slew',True) else SPEED_RAD_S)
 
     def source_fault(self,msg):
         self.node.stop_validation('Source fault: '+msg.data)
@@ -83,6 +86,12 @@ class FullHandRuntime:
         resp.success=True;resp.message='Both hand permits revoked';return resp
 
     def request(self,side,enabled):
+        if enabled and self.config['source']=='manus' and self.config['mode'] in ('normal','fake') and self.latch.phase=='WARMUP':
+            raise ValueError('Hand acquisition not ready; wait for both hands to become READY')
+        if enabled and self.config['source']=='manus' and any(
+            s not in self.latch.last or time.monotonic()-self.latch.last[s][2]>TIMEOUT_S
+            for s in ('left','right')):
+            raise ValueError('Hand acquisition not ready; source data is stale')
         if enabled and self.latch.phase!='FAULT' and self.latch.requested.get(side):return
         self.latch.request_hand(side,enabled,time.monotonic());self.gate.clear(side)
         if not enabled:self.stop_hardware_side(side)
@@ -98,7 +107,11 @@ class FullHandRuntime:
     def status(self):
         now=time.monotonic()
         return {'mode':self.config['mode'],'phase':self.latch.phase,'reason':self.latch.reason,
+            # Published by tick after the constructor's SDK stop calls finish.
+            'source_ready':True,
             'hands':{s:{'state':self.latch.side_state(s,now),'permit':self.latch.requested[s],
+                        'can_engage':self.latch.phase in ('READY','ARMED') and self.latch.samples[s]>=WARMUP_FRAMES
+                            and all(k in self.latch.last and now-self.latch.last[k][2]<=TIMEOUT_S for k in ('left','right')),
                         'samples':self.latch.samples[s],
                         'reason':self.latch.side_reasons[s] if self.severity_policy else self.latch.reason} for s in ('left','right')},
             'hardware_send':0 if self.config['mode']=='fake' else self.node.validation_send_count,
@@ -147,6 +160,10 @@ class FullHandRuntime:
         if any(self.latch.requested.values()):self.node.stop_validation('GUI control connection lost')
 
     def tick(self):
+        if self.config['source']=='manus' and self.latch.phase=='READY' and not any(self.latch.requested.values()) and any(
+            s not in self.latch.last or time.monotonic()-self.latch.last[s][2]>TIMEOUT_S
+            for s in ('left','right')):
+            self.reacquire_manus_standby('Manus observation gap; waiting for fresh stable input')
         self.server.drain(self.dispatch,self.disconnected)
         self.latch.watch(time.monotonic(),time.time())
         self.apply_source_holds()
@@ -196,6 +213,7 @@ class FullHandRuntime:
     def stamp(msg):return msg.header.stamp.sec*10**9+msg.header.stamp.nanosec
 
     def manus(self,side,message):
+        stage='matching'
         try:
             stamp=self.stamp(message)
             if stamp not in self.keypoints[side]:
@@ -204,15 +222,55 @@ class FullHandRuntime:
             if not self.keypoints[side][stamp]:raise ValueError('Invalid Manus keypoint input')
             self.sequence[side]+=1
             now_ns=time.monotonic_ns();ros_now=self.node.get_clock().now().nanoseconds
+            stage='raw_validation'
+            from .normal_continuity import ManusNormalContinuityGate
+            if isinstance(self.raw,ManusNormalContinuityGate):
+                self.raw.following=any(self.latch.requested.values())
+                self.raw.reason=''
             accepted=self.raw.observe_ros_target(side,list(message.name),list(message.position),stamp,ros_now,
                 self.sequence[side],self.config['token'][:16],now_ns)
-            if not accepted:self.soft_anomaly();return
+            if not accepted:
+                if not self.reacquire_manus_standby(self.raw.reason):self.soft_anomaly()
+                return
+            if isinstance(self.raw,ManusNormalContinuityGate) and self.raw.following and self.raw.reason:
+                self.emit_event('WARNING',side,'Moderate Manus target discontinuity; following continues with native Sharpa speed control',
+                    **self.raw.warning_context)
             packet={'schema':'litchibot.sharpa_target.v1','dry_run':True,'engaged':True,'side':side,
                 'joint_names':list(message.name),'positions_rad':list(message.position),'valid_glove_joint_count':25,
                 'valid_target_mask':[True]*22,'sequence':self.sequence[side],'session_id':self.config['token'][:16],
                 'source_received_monotonic_ns':now_ns-(ros_now-stamp)}
+            stage='feedback_and_command_validation'
             self.process(side,packet,stamp)
-        except Exception as error:self.node.stop_validation(error)
+        except Exception as error:
+            if stage=='raw_validation' and (str(error).startswith(('Repeated Raw discontinuity:','Extreme Raw discontinuity:'))
+                    or str(error)=='Manus raw discontinuity/source timeout'):
+                if self.reacquire_manus_standby(error):return
+            age=(self.node.get_clock().now().nanoseconds-self.stamp(message))/1e6
+            self.node.stop_validation(f'{error}; side={side}, stage={stage}, source_age_ms={age:.3f}')
+
+    def reacquire_manus_standby(self,reason):
+        """Reject observation jumps without native stop calls while already OFF.
+
+        Never clears FAULT, recovers a running incident, or grants a permit.
+        Both sides must acquire 30 fresh stable frames again before Start.
+        """
+        if self.config['source']!='manus' or self.config['mode'] not in ('normal','fake'):
+            return False
+        if self.latch.phase not in ('WARMUP','READY') or any(self.latch.requested.values()):
+            return False
+        if self.latch.phase=='READY':self.latch.started=time.monotonic()
+        # Do not extend a current acquisition deadline on successive rejects.
+        self.latch.phase='WARMUP'
+        self.latch.reason='Waiting for stable Manus input: '+str(reason)
+        self.latch.samples={'left':0,'right':0}
+        self.latch.last.clear();self.latch.measured.clear()
+        self.latch.baseline.clear();self.latch.commanded.clear()
+        self.latch.armed_at=None;self.latch.last_hold=None
+        self.raw.previous.clear()
+        for events in getattr(self.raw,'events',{}).values():events.clear()
+        for side in ('left','right'):self.gate.clear(side)
+        self.emit_event('WARNING','both',self.latch.reason,recovery_state='WARMUP')
+        return True
 
     @property
     def severity_policy(self):
@@ -335,6 +393,10 @@ class FullHandRuntime:
         measured=hand.read_joint_state().position;now_ns=time.monotonic_ns()
         if self.latch.phase=='FAULT':return
         if not self.latch.requested[side]:self.gate.clear(side)
+        if self.config['source']=='manus' and not self.latch.limit_output_slew:
+            # Keep the observation/acquisition guard before the GUI heartbeat
+            # activates following; active targets use native SDK speed control.
+            self.gate.max_speed=None if self.latch.phase=='ARMED' else SPEED_RAD_S
         q=self.gate.accept(packet,feedback=(measured,now_ns),now_ns=now_ns)
         frame_id=f"{self.config['source']}:{side}:{packet['session_id']}:{packet['sequence']}"
         held_before=self.latch.holds[side] if self.severity_policy else False

@@ -42,12 +42,17 @@ def revalidate_bag(
         trim_end_sec = float(state.get("trim_end_sec", 0.0))
     if trim_start_sec < 0.0 or trim_end_sec < 0.0:
         raise ValueError("trim values must be non-negative")
+    continuity_kwargs = {"continuity_enabled": True} if state.get("continuity_enabled") else {}
     failures, report = inspect(
         bag_path,
         contracts,
         trim_start_sec=trim_start_sec,
         trim_end_sec=trim_end_sec,
+        **continuity_kwargs,
     )
+    failures = tuple(failures) + tuple(state.get("live_continuity", {}).get("failures", []))
+    if state.get("auto_stop_reason") and not failures:
+        failures = ("recording automatically stopped for a continuity failure",)
     outcome = recording_outcome(exit_code=0, stream_failures=failures)
 
     history = list(state.get("revalidation_history") or [])
@@ -68,6 +73,7 @@ def revalidate_bag(
             "validation_policy": "source_header_continuity_trimmed_boundary_v3",
             "trim_start_sec": trim_start_sec,
             "trim_end_sec": trim_end_sec,
+            "source_warnings": list(dict.fromkeys([*report.get("source_warnings", []), *state.get("live_continuity", {}).get("source_warnings", [])])),
             "boundary_warnings": list(report.get("boundary_warnings") or []),
             "transport_warnings": list(report.get("transport_warnings") or []),
             "revalidation_history": history,

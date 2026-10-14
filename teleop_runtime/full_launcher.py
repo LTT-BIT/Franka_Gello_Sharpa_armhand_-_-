@@ -59,6 +59,31 @@ def deployment_port(root,key,default):
     return int(value or default)
 
 
+def ensure_manus_bridge_current(root=ROOT):
+    """Rebuild only the explicitly configured project bridge when stale.
+
+    Portable copies can retain an old ignored .so after updating tracked C++.
+    Never rebuild a foreign library or initialize a device here.
+    """
+    root=Path(root)
+    env_file=root/'docker/.env'
+    if not env_file.is_file():return
+    configured=''
+    for line in env_file.read_text().splitlines():
+        if line.startswith('MANUS_NATIVE_LIBRARY='):
+            configured=line.split('=',1)[1].strip();break
+    library=root/'adapters/manus/build/libmanus_skeleton_bridge.so'
+    if not configured or Path(configured).resolve()!=library.resolve():return
+    sources=[root/'adapters/manus/CMakeLists.txt',
+             root/'adapters/manus/native/manus_skeleton_bridge.cpp',
+             root/'adapters/manus/native/litchi_manus_bridge.h']
+    if not all(p.is_file() for p in sources):
+        raise RuntimeError('Configured project MANUS bridge source is missing')
+    if not library.is_file() or max(p.stat().st_mtime_ns for p in sources)>library.stat().st_mtime_ns:
+        print('MANUS project bridge missing or older than source; rebuilding before device startup',flush=True)
+        subprocess.run([str(root/'adapters/manus/scripts/build.sh')],cwd=root,check=True)
+
+
 def preflight(port):
     arm_port=deployment_port(ROOT,'TELEOP_CONTROL_PORT',5590)
     recorder_port=deployment_port(ROOT,'COLLECTION_CONTROL_PORT',5592)
@@ -303,6 +328,8 @@ def main(argv=None):
             path=Path(directory)/'session.json';path.write_text(json.dumps(data));path.chmod(0o600)
             from adapters.litchibot.full_control import load_full_config
             load_full_config(path)
+            if args.hand_source=='manus' and not args.fake_input:
+                ensure_manus_bridge_current()
             preflight(args.control_port)
             print(f"FULL TELEOP source={data['source']} mode={data['mode']}; arms/hands initially DISABLED",flush=True)
             return FullLauncher(ROOT,path,data).run()

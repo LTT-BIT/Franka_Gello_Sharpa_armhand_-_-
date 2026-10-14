@@ -1,0 +1,74 @@
+# cam1-only USB3/YUYV profile: avoid the reproduced MJPG timestamp anomaly.
+# Keep source capture timestamps; do not substitute host receive timestamps.
+# Based on the wrist RGB profile; cam2 retains camera_secondary_params.yaml.
+# common params
+depth_registration: false
+enable_d2c_viewer: false
+enable_point_cloud: false
+enable_colored_point_cloud: false
+enable_ldp: false
+enable_laser: false
+
+# pcd
+ordered_pc: false
+point_cloud_decimation_filter_factor: 2
+
+# enable_laser: true
+interleave_ae_mode: "laser"
+interleave_frame_enable: false
+interleave_skip_enable: false
+interleave_skip_index: 1
+time_domain: "global" # global, device, system
+enable_sync_host_time: false
+enable_frame_timestamp_csv: true
+
+trigger_out_enabled: false
+frames_per_trigger: 0
+software_trigger_period: 0
+
+# color params
+enable_color: true
+color_width: 640
+color_height: 480
+color_fps: 30
+color_format: "YUYV"
+enable_color_auto_exposure: true
+color_exposure: 30 # 3ms
+color_gain: 16 # -1 default
+enable_color_undistortion: false
+
+# depth params
+enable_depth: false
+depth_width: 0
+depth_height: 0
+depth_fps: 0
+depth_format: "ANY"
+
+depth_registration: false
+align_mode: "HW"
+align_target_stream: "COLOR"
+enable_depth_undistortion: false
+
+# left ir params
+enable_left_ir: false
+left_ir_width: 0
+left_ir_height: 0
+left_ir_fps: 0
+left_ir_format: "ANY"
+enable_ir_auto_exposure: true
+ir_exposure: 3000 # 3ms
+ir_gain: 16 # -1 default
+
+# right ir params
+enable_right_ir: false
+right_ir_width: 0
+right_ir_height: 0
+right_ir_fps: 0
+right_ir_format: "ANY"
+
+# ir params except 330
+# enable_ir: true
+# ir_width: 0
+# ir_height: 0
+# ir_fps: 0
+# ir_format: "ANY"

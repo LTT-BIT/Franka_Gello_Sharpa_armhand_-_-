@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -18,6 +20,21 @@ from launch.substitutions import LaunchConfiguration
 
 
 LICENSE_ENVIRONMENT_VARIABLE = "ORBBEC_SDK_LICENSE_ACCEPTED"
+
+
+def _prepare_camera_parameters(parameter_file: Path, camera_name: str, diagnostic_dir: Path) -> Path:
+    """Persist a unique diagnostic profile so CSV files survive collector exit."""
+    parameters = yaml.safe_load(parameter_file.read_text(encoding="utf-8")) or {}
+    if not parameters.get("enable_frame_timestamp_csv", False):
+        return parameter_file
+    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:12]
+    stem = f"{camera_name}_{run_id}"
+    parameters["frame_timestamp_csv_file"] = str(diagnostic_dir / f"{stem}.csv")
+    runtime_file = diagnostic_dir / f"{stem}_params.yaml"
+    with runtime_file.open("x", encoding="utf-8") as stream:
+        yaml.safe_dump(parameters, stream, sort_keys=False)
+    return runtime_file
 
 
 def _camera_actions(context):
@@ -62,6 +79,10 @@ def _camera_actions(context):
     for name in ("cam0", "cam1", "cam2"):
         entry = cameras[name]
         parameter_file = bringup_share / "config" / str(entry["config_file"])
+        parameter_file = _prepare_camera_parameters(
+            parameter_file, name,
+            Path(cameras.get("timestamp_diagnostics_dir", "/collection_data/diagnostics/camera_timestamps")),
+        )
         include = IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(driver_launch)),
             launch_arguments={

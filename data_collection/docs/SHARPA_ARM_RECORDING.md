@@ -32,6 +32,41 @@ cd /home/user/gello_upper_body_teleop
 ./ops/run/run_sharpa_hands_cyclonedds.sh
 ```
 
+### 触觉版：实时缺帧预警与自动结束 episode
+
+触觉版已默认启用实时连续性监控；普通版保持原来的录制行为。终端 1 的
+Operator GUI 在录制中只在数据采集状态窄栏显示黄色警告，不弹窗。
+严重故障自动结束本 episode 并归为报错，收尾完成后才弹出红色非模态错误窗口。
+
+- cam0 RGB/depth 按 20 Hz、cam1/cam2 RGB 按 30 Hz 检查各自的源时间戳。
+  相邻两帧之间连续缺 1～2 帧警告并继续，单个间隔缺 3 帧及以上自动结束本段。
+  整段累计缺帧数只作统计；多处分散缺帧不会按累计 3 帧触发退出。估算采用
+  `max(0, floor((gap_ms - 5) / period_ms + 0.5) - 1)`，留出 5 ms 抖动余量。
+- 左右臂状态、arm status、Sharpa command/state 按 30 Hz 新鲜度判断；左右臂
+  action 分别检查，仅该侧 engaged 时要求更新，HOLD 不要求该侧持续发布 action。
+- 20 路触觉按本机基线检查：source gap 超过 250 ms 黄色预警，超过 500 ms
+  自动结束。不将 tactile deformation 当作相机图像，不套用 SDK 60 Hz 的缺帧数。
+- source 时间戳缺失、重复或倒退判失败。接收间隔大但 source 连续只警告；
+  应更新的数据流超过 1 秒没有收到消息，自动结束并提示“接收中断，源或传输原因待确认”。
+  Sharpa 时间戳反映 ROS 发布连续性，不等同于 SDK 原始采样时间。
+
+自动结束会先向当前 rosbag 发送 SIGINT 并等待收尾，再校验实际落盘数据，保留
+原始 bag。`collection_state.json` 保存 `live_continuity`、逐流计数／最大间隔、
+`auto_stop_reason` 和 bag 校验报告。本段保持 `incomplete`、`finalized=false`，
+自动加入本录制组的“报错.txt”；再次校验或人工评价不能使自动失败的数据变为合格。
+如分类文件保存失败，GUI 会要求重试“报错”或“放弃”，完成后才允许重录。
+
+终端 3 常驻程序、相机和臂手遥操不会退出。收尾与自动分类完成后，GUI 显示
+“已归类为报错，可再次踩踏板开始”。下一次踩 L 或点击开始录制才创建新的 episode；
+不用额外确认质量评价，不会自动续录。收尾期间踏板不能开始新段。
+如故障仍存在，新段仍会自动停止。需要设备冷却时，由操作员安排暂停相机及遥操。
+
+停止后仍按现有最低平均频率验收；录制首尾覆盖不足与内部缺口分别判断，首尾裁剪
+不会隐藏内部缺帧。仅接收抖动不会被称为“过热”或“相机源缺帧”。
+
+当前实现已通过离线模拟测试，设备上线后还需验证满负载开销与触觉预警频率。
+本机采集器使用源码链接安装，重启 GUI 和终端 3 即可加载此次修改，无需重建工作区。
+
 终端 3：确认双臂、双手都正常跟随之后启动常驻采集器。
 
 ```bash
@@ -173,3 +208,76 @@ Sharpa 启动器还会把 MANUS、V4 optimizer 和 Sharpa SDK 固定在 `HOUSEKE
   完整性后再离线转换。
 - 若右臂日志出现 `Connection to FCI refused`，先在 Panda Desk 为右臂重新启用 FCI；
   这不是 DDS 或 Sharpa topic 冲突。
+
+### 2026-10-14：启动附近的时间戳异常与修复
+
+当天 episode0 的原始 bag 为北京时间 10:51:15–10:53:03。cam1 在录制约
+6.95 秒时，源时间戳回退约 27.25 秒，后续还多次发生跳变；其他三路图像源时间戳
+未发生同类异常。cam1 当时仅有一个发布者，使用 `time_domain: global`。
+相机在录制前已经运行约 40 秒，不能把这种反复跳时当作正常预热。
+可能与设备时间到 SDK 全局时间的转换有关，SDK／固件具体原因仍需硬件诊断。
+
+已修复 ROS Humble 下预警升级为错误时的日志调用异常：不同级别使用独立调用行，
+并在诊断日志之前调度自动收尾。日志异常不会再阻止自动停止。时间戳错误现在分别
+显示缺失、重复或倒退量，报告保存错误前后的源时间戳。
+
+触觉版的启动就绪检查现在同时要求图像接收和源时间戳连续稳定 5 秒。
+时间戳无效、重复、倒退或大间隔会重新计时；这不是录制后忽略前 5 秒。
+正常就绪后若相机继续跳时，仍会停止并报错。普通版启动检查保持原样。
+不使用 `system` 接收时间替代采样时间来隐藏故障，已有错误 bag 不修改。
+
+加载修复：确认没有正在录制或校验后，Ctrl-C 退出终端 3，再按原触觉命令启动。
+本次无需重启终端 1／2。若仍报告 cam1 时间戳倒退，请保留新报告，暂停采集，
+再检查该相机的连接、SDK 时间同步和固件；不要放宽缺帧阈值继续收集训练数据。
+
+### 2026-10-14：cam1 全局时钟配置修复
+
+cam1 使用独立的 `camera_cam1_global_params.yaml`：保留采样时间的
+`time_domain: global`，将 `enable_sync_host_time` 改为 `false`，符合
+[Orbbec 官方时间同步参数说明](https://orbbec.github.io/OrbbecSDK_ROS2/zh/source/camera_devices/4_application_guide/launch_parameters.html)。
+cam0 与 cam2 保留原参数文件，分辨率、频率、序列号和左右语义不变。
+部署配置 `data_collection/config/cameras.yaml` 与示例均已为 cam1 选择该独立配置。
+相机参数包已重新安装，后续原触觉录制命令自动使用修复配置。
+
+cam1 的轻量 CSV 诊断默认启用，保存 SDK 帧序号、设备时间、全局时间、
+SDK 接收时间与发布时间，不保存额外图像副本。每次启动使用唯一文件名，位于
+`$TELEOP_DATA_ROOT/diagnostics/camera_timestamps/`，并保存本次有效参数 YAML，
+不会覆盖旧诊断。容器目录为 `/collection_data/diagnostics/camera_timestamps`；
+可在相机部署配置的 `camera_bringup.timestamp_diagnostics_dir` 中指定其他目录。
+
+这是针对异常时间映射的配置修复，不放宽缺帧阈值，也不使用主机接收时间伪装采样时间。
+SDK 和相机固件未升级，已有错误 bag 未修改。实机短时验证不能替代后续满负载录制验证。
+
+实机验证补充：关闭主机同步、保留 SDK 2.8.6 后，cam1 在三分钟测试内仍发生
+设备／传感器时间回退；临时使用官方 SDK 2.10.6 也复现。帧序号与主机接收时间
+连续。新版 SDK 未部署到正式流程，固件未修改，因此目前不能标记为故障已修复。
+/sys 与相机日志确认：cam1（CV2756100018）协商为 USB 2.1 / 480 Mbps，
+cam2（CV2L761000F8）为 USB 3.2 / 5000 Mbps。下一步先更换 cam1 的 USB 3 数据线
+并直连 USB 3 端口，再重复验证，判断异常是否跟随线缆、端口或设备本体。
+这是一项待验证的硬件差异，并非已证明的根因。
+两轮 CSV、参数与诊断汇总保存在 `$TELEOP_DATA_ROOT/diagnostics/camera_timestamps/`。
+复验工具：`ops/diagnostics/validate_camera_source_clocks.py`，只订阅相机，
+不启动相机、不发送机器人命令；需先启动相机并通过就绪检查。
+
+### USB 3 复测与已验证的 cam1 修复方案
+
+cam1 已直连 USB 3，/sys 协商速度为 5000 Mbps。但保持自动选择的 MJPG 时仍复现
+时间戳异常；官方 SDK 2.10.6 的 `ob_timestamp_tracker` 直接采集（绕过 ROS 驱动）
+也报告 cam1 时间戳异常，设备重启后 MJPG 仍失败，因此 USB 3、SDK 升级或单次
+重启并不足以修复。
+
+已将 cam1 独立配置的 `color_format` 从 `ANY`（实机选择 MJPG）改为显式 `YUYV`，
+保持 640×480、30 Hz、`time_domain: global` 和 `enable_sync_host_time: false`。
+要求保留本次 USB 3 连接。这是绕开该相机已复现的 MJPG 采集／元数据异常路径；
+未证明是纯硬件损坏，也不伪造采样时间。ROS 图像 topic 和录制接口不变，cam2
+继续使用原自动格式配置。
+
+实机结果：cam1 的 YUYV 流连续观察 180 秒，约 5400 帧，零时间戳错误与严重缺口；
+随后四路相机实际 rosbag 写盘 90 秒，全部通过 source 连续性与内容校验。cam1
+录到 2700 帧、30.02 Hz，最大相邻源时间间隔 33.36 ms，重复／倒退为零。
+第一次 180 秒观察中 cam0 出现过独立的长暂停；随后写盘复验 cam0 正常。
+这不能证明所有设备已完成长期满负载验收，后续仍需观察 cam0 和臂手同时运行情况。
+
+相机参数包通过源码链接安装，下次原录制命令自动加载 YUYV，无需额外启动参数。
+正式 SDK 仍为 2.8.6，固件未刷写，缺帧阈值未放宽。原始测试记录和写盘校验报告
+保存于 `$TELEOP_DATA_ROOT/diagnostics/camera_timestamps/`，不计入训练 episode。

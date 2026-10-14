@@ -1,0 +1,84 @@
+--- a/portable_deps/litchi_hardware/ros2/src/manus_glove/manus_driver/manus_driver/node.py
++++ b/portable_deps/litchi_hardware/ros2/src/manus_glove/manus_driver/manus_driver/node.py
+@@ -1,13 +1,16 @@
+ """Publish Manus hand tracking frames as standard ROS PoseArray messages."""
+ 
+ from __future__ import annotations
++
++import json
+ 
+ import rclpy
+ from builtin_interfaces.msg import Time as RosTime
+ from geometry_msgs.msg import Pose as RosPose
+ from geometry_msgs.msg import PoseArray
++from std_msgs.msg import String
+ from rclpy.node import Node
+-from rclpy.qos import qos_profile_sensor_data
++from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
+ 
+ from litchi_hardware.core.types import HandSide, HandTrackingFrame
+ from litchi_hardware.hardware.manus import (
+@@ -61,6 +64,7 @@
+         self.declare_parameter("native_loopback_only", False)
+         self.declare_parameter("calibration_directory", "")
+         self.declare_parameter("frame_id", "manus_hand")
++        self.declare_parameter("reliable_keypoints", False)
+ 
+         use_fake_hardware = self.get_parameter("use_fake_hardware").value
+         backend = ManusBackend(self.get_parameter("backend").value)
+@@ -102,14 +106,21 @@
+         )
+         self._tracker.connect()
+ 
++        self._reliable_keypoints = self.get_parameter("reliable_keypoints").value
++        self._control_ready = False
++        if self._reliable_keypoints:
++            self._control_subscription = self.create_subscription(
++                String, "/teleop/sharpa/supervisor/state", self._on_control_state, 10
++            )
++        keypoint_qos = QoSProfile(depth=100) if self._reliable_keypoints else qos_profile_sensor_data
+         self._side_publishers = {}
+         if self.get_parameter("publish_left").value:
+             self._side_publishers[HandSide.LEFT] = self.create_publisher(
+-                PoseArray, "/manus/left/keypoints", qos_profile_sensor_data
++                PoseArray, "/manus/left/keypoints", keypoint_qos
+             )
+         if self.get_parameter("publish_right").value:
+             self._side_publishers[HandSide.RIGHT] = self.create_publisher(
+-                PoseArray, "/manus/right/keypoints", qos_profile_sensor_data
++                PoseArray, "/manus/right/keypoints", keypoint_qos
+             )
+         rate_hz = float(self.get_parameter("publish_rate_hz").value)
+         if rate_hz <= 0:
+@@ -121,8 +132,31 @@
+             f"fake={use_fake_hardware}"
+         )
+ 
++    def _on_control_state(self, message) -> None:
++        try:
++            ready = json.loads(message.data).get("source_ready") is True
++        except (ValueError, AttributeError):
++            return
++        publishers = self.get_publishers_info_by_topic("/teleop/sharpa/supervisor/state")
++        if ready and len(publishers) == 1 and publishers[0].node_name == "sharpa_driver":
++            self._control_ready = True
++
+     def _publish_frames(self) -> None:
++        # Discovery alone does not mean callbacks can run: the supervisor still
++        # performs synchronous native stops after creating its subscriptions.
++        # Await its first executor-driven status, not merely its graph presence.
++        if self._reliable_keypoints and not self._control_ready:
++            return
+         for side, publisher in self._side_publishers.items():
++            # Full-mode targets require the supervisor to have received the
++            # exact original frame. Do not begin the stream during SDK startup
++            # before its reliable validity subscription has been discovered.
++            if self._reliable_keypoints and not any(
++                endpoint.node_name == "sharpa_driver"
++                and endpoint.qos_profile.reliability == ReliabilityPolicy.RELIABLE
++                for endpoint in self.get_subscriptions_info_by_topic(f"/manus/{side.value}/keypoints")
++            ):
++                continue
+             try:
+                 frame = self._tracker.read_frame(side)
+                 # MANUS publishTime uses an SDK/device clock domain rather than

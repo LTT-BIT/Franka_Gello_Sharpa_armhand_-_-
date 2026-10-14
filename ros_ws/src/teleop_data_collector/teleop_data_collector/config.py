@@ -24,6 +24,7 @@ class CollectorConfig:
     trim_start_sec: float
     trim_end_sec: float
     provenance: dict[str, Any]
+    continuity_enabled: bool = False
 
 
 def load_collector_config(node: Node) -> CollectorConfig:
@@ -35,7 +36,9 @@ def load_collector_config(node: Node) -> CollectorConfig:
     trim_start_sec = _get_nonnegative_float(node, "trim_start_sec", 0.0)
     trim_end_sec = _get_nonnegative_float(node, "trim_end_sec", 0.0)
 
+    continuity_enabled = _coerce_bool(_get_or_declare(node, "continuity_enabled", False), False)
     provenance = {
+        "continuity_enabled": continuity_enabled,
         "bag_contract_version": _get_or_declare(node, "bag_contract_version", 1),
         "teleoperator": _get_required_string(node, "teleoperator", ""),
         "workcell_id": _get_required_string(node, "workcell_id", ""),
@@ -66,6 +69,7 @@ def load_collector_config(node: Node) -> CollectorConfig:
         trim_start_sec=trim_start_sec,
         trim_end_sec=trim_end_sec,
         provenance=provenance,
+        continuity_enabled=continuity_enabled,
     )
 
 

@@ -54,11 +54,25 @@ case "$COLLECTION_WITH_CAMERAS" in
       deployment_config:="$COLLECTION_CAMERA_CONFIG" &
     camera_pid=$!
 
+    source_readiness_args=()
+    # Only the continuity-enabled profile adds source-time gating; ordinary
+    # recording retains its existing reception-only readiness behavior.
+    continuity_enabled="$(python3 - "$COLLECTION_RECORD_CONFIG" <<'PY_CONFIG'
+import sys
+import yaml
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = yaml.safe_load(stream)["teleop_data_collector"]["ros__parameters"]
+print("true" if config.get("continuity_enabled", False) else "false")
+PY_CONFIG
+)"
+    if [[ "$continuity_enabled" == true ]]; then
+      source_readiness_args+=(--require-source-timestamps)
+    fi
     echo "Waiting for four camera streams to deliver stable frames..."
     setsid python3 -m teleop_data_collector.camera_stream_health wait \
       --timeout-sec "$COLLECTION_CAMERA_READY_TIMEOUT_SEC" \
       --stable-sec 5 \
-      --max-gap-ms 150 &
+      --max-gap-ms 150 "${source_readiness_args[@]}" &
     readiness_pid=$!
 
     camera_exited=false

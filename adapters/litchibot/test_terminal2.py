@@ -123,7 +123,13 @@ def test_manus_launch_arguments_and_algorithm_nodes_preserved():
         a=context_for(old_description,overrides);b=context_for(new_description,overrides)
         for original,updated in zip(old_nodes,new_nodes):
             assert original.node_package==updated.node_package
-            assert evaluate_parameters(a,original._Node__parameters)==evaluate_parameters(b,updated._Node__parameters)
+            old_parameters=evaluate_parameters(a,original._Node__parameters)
+            new_parameters=evaluate_parameters(b,updated._Node__parameters)
+            if updated.node_package=='manus_sharpa_teleop':
+                assert new_parameters[0].pop('max_output_age_s')==0.0
+            if updated.node_package=='manus_driver':
+                assert new_parameters[0].pop('reliable_keypoints') is False
+            assert old_parameters==new_parameters
 
 
 @pytest.mark.parametrize('source,dry,expected',[('manus','false',('manus_driver','manus_sharpa_teleop','sharpa_driver')),
@@ -228,6 +234,76 @@ def test_ros_command_matches_v4_final_publish_contract():
         assert list(new.position)==list(original.position)
         assert new.header.stamp==original.header.stamp
         assert ':'.join(('litchibot',side.value)) in new.header.frame_id
+
+
+@pytest.mark.parametrize('budget,elapsed,published',[(.15,.4,False),(.15,.05,True),(0,.4,True)])
+def test_v4_cold_output_freshness_preserves_original_stamp(budget,elapsed,published):
+    pytest.importorskip('rclpy')
+    from geometry_msgs.msg import PoseArray,Pose
+    from litchi_hardware.core.types import HandSide
+    from manus_sharpa_teleop.retarget_node import RetargetNode
+    from adapters.litchibot.retarget import JOINT_NAMES
+    clock=[10.0];publisher=Mock()
+    def solve(frame):
+        clock[0]+=elapsed
+        return SimpleNamespace(features={'joint_names':list(JOINT_NAMES),'joint_position':[.1]*22})
+    node=SimpleNamespace(_max_input_age_s=.25,_max_output_age_s=budget,
+        _retargeter=SimpleNamespace(retarget=solve),_side_publishers={HandSide.LEFT:publisher},
+        get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=int(clock[0]*1e9))),
+        _warn_throttled=Mock())
+    msg=PoseArray();msg.header.stamp.sec=10;msg.poses=[Pose() for _ in range(25)]
+    RetargetNode._on_keypoints(node,HandSide.LEFT,msg)
+    assert publisher.publish.called==published
+    if published:assert publisher.publish.call_args.args[0].header.stamp==msg.header.stamp
+    else:assert 'expired' in node._warn_throttled.call_args.args[0]
+
+
+@pytest.mark.parametrize('reliable,ready,control_ready,reads',[(True,False,True,0),(True,True,False,0),(True,True,True,1),(False,False,False,1)])
+def test_full_manus_source_waits_for_validity_subscription(reliable,ready,control_ready,reads):
+    pytest.importorskip('rclpy')
+    from rclpy.qos import QoSProfile
+    from litchi_hardware.core.types import HandSide
+    from manus_driver.node import ManusDriverNode
+    tracker=SimpleNamespace(read_frame=Mock(side_effect=TimeoutError('No frame')))
+    node=SimpleNamespace(_reliable_keypoints=reliable,_control_ready=control_ready,_tracker=tracker,
+        _side_publishers={HandSide.LEFT:Mock()},_last_warning_ns=0,
+        get_subscriptions_info_by_topic=lambda topic:[SimpleNamespace(node_name='sharpa_driver',qos_profile=QoSProfile(depth=100))] if ready else [],
+        get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=1)),get_logger=Mock())
+    ManusDriverNode._publish_frames(node)
+    assert tracker.read_frame.call_count==reads
+
+
+@pytest.mark.parametrize('value,budget,published',[(200.0,.15,False),(float('nan'),.15,False),(200.0,0.0,True)])
+def test_full_v4_rejects_illegal_output_without_clipping(value,budget,published):
+    pytest.importorskip('rclpy')
+    from geometry_msgs.msg import PoseArray,Pose
+    from manus_sharpa_teleop.retarget_node import RetargetNode
+    from litchi_hardware.core.types import HandSide
+    from adapters.litchibot.retarget import JOINT_NAMES
+    positions=[.1]*22;positions[0]=value;publisher=Mock()
+    node=SimpleNamespace(_max_input_age_s=.25,_max_output_age_s=budget,
+        _retargeter=SimpleNamespace(retarget=lambda frame:SimpleNamespace(features={'joint_names':list(JOINT_NAMES),'joint_position':positions})),
+        _side_publishers={HandSide.LEFT:publisher},
+        get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=10**10)),_warn_throttled=Mock())
+    msg=PoseArray();msg.header.stamp.sec=10;msg.poses=[Pose() for _ in range(25)]
+    RetargetNode._on_keypoints(node,HandSide.LEFT,msg)
+    assert publisher.publish.called==published
+    if published:assert publisher.publish.call_args.args[0].position[0]==value
+    else:assert 'invalid' in node._warn_throttled.call_args.args[0]
+
+
+@pytest.mark.parametrize('payload,owners,expected',[
+    ({'source_ready':True},['sharpa_driver'],True),
+    ({'source_ready':False},['sharpa_driver'],False),
+    ({'source_ready':True},['other'],False),
+    ({'source_ready':True},['sharpa_driver','other'],False)])
+def test_full_source_requires_executor_ready_from_unique_owner(payload,owners,expected):
+    pytest.importorskip('rclpy')
+    from manus_driver.node import ManusDriverNode
+    node=SimpleNamespace(_control_ready=False,
+        get_publishers_info_by_topic=lambda topic:[SimpleNamespace(node_name=n) for n in owners])
+    ManusDriverNode._on_control_state(node,SimpleNamespace(data=json.dumps(payload)))
+    assert node._control_ready is expected
 
 
 def test_shared_fake_driver_never_initializes_physical_sdk(monkeypatch):

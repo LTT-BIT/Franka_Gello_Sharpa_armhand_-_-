@@ -22,6 +22,24 @@ def port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 
 
+def test_manus_acquisition_disables_start_without_changing_legacy_status(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG',raising=False)
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path))
+    window=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    try:
+        def status(allowed):
+            return {'hands':{s:{'state':'DISABLED','permit':False,'can_engage':allowed}
+                for s in ('left','right')}}
+        window._apply_hand_status(status(False))
+        assert all(not b.isEnabled() for b in window.hand_engage_buttons.values())
+        window._apply_hand_status(status(True))
+        assert all(b.isEnabled() for b in window.hand_engage_buttons.values())
+        window._apply_hand_status({'hands':{s:{'state':'DISABLED','permit':False} for s in ('left','right')}})
+        assert all(b.isEnabled() for b in window.hand_engage_buttons.values())
+    finally:window.close();app.processEvents()
+
+
 def test_gui_authority_independent_arms_and_disengage_all(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([])
     QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path))

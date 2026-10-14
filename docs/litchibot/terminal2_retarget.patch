@@ -1,0 +1,63 @@
+--- a/portable_deps/litchi_hardware/ros2/src/manus_sharpa_teleop/manus_sharpa_teleop/manus_sharpa_teleop/retarget_node.py
++++ b/portable_deps/litchi_hardware/ros2/src/manus_sharpa_teleop/manus_sharpa_teleop/manus_sharpa_teleop/retarget_node.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
+ 
+ from functools import partial
++import math
+ 
+ import rclpy
+ from geometry_msgs.msg import PoseArray
+@@ -12,6 +13,7 @@
+ 
+ from litchi_hardware.core.types import HandSide, HandTrackingFrame, Pose
+ from litchi_hardware.hardware.manus import MANUS_SHARPA_25_SCHEMA
++from litchi_hardware.hardware.sharpa.schema import SHARPA_WAVE_JOINT_SCHEMA
+ 
+ from .analytic_retargeter import AnalyticRetargeter, RetargetingConfig
+ from .v4_retargeter import SharpaV4Retargeter, V4RetargetingConfig
+@@ -58,6 +60,7 @@
+         self.declare_parameter("v4_filter_alpha", 1.0)
+         self.declare_parameter("v4_worker_python", "")
+         self.declare_parameter("max_input_age_s", 0.25)
++        self.declare_parameter("max_output_age_s", 0.0)
+ 
+         backend = str(self.get_parameter("backend").value).lower()
+         if backend == "v4":
+@@ -80,6 +83,7 @@
+         else:
+             raise ValueError("backend must be 'v4' or 'analytic'")
+         self._max_input_age_s = float(self.get_parameter("max_input_age_s").value)
++        self._max_output_age_s = float(self.get_parameter("max_output_age_s").value)
+         self._side_publishers = {}
+         self._side_subscriptions = []
+ 
+@@ -125,6 +129,28 @@
+                 )
+                 return
+             action = self._retargeter.retarget(frame)
++            # Cold V4 solves can outlive the input's freshness budget. Preserve
++            # the original receipt stamp and discard, never restamp old motion.
++            max_output_age = getattr(self, "_max_output_age_s", 0.0)
++            output_age = self.get_clock().now().nanoseconds * 1e-9 - frame.timestamp_s
++            if max_output_age > 0 and not 0 <= output_age <= max_output_age:
++                self._warn_throttled(
++                    f"dropped expired {side.value} V4 output ({output_age:.3f}s old)"
++                )
++                return
++            if max_output_age > 0:
++                schema = SHARPA_WAVE_JOINT_SCHEMA
++                positions = action.features["joint_position"]
++                names = action.features["joint_names"]
++                if tuple(names) != schema.names or len(positions) != schema.size:
++                    self._warn_throttled(f"dropped invalid {side.value} V4 joint schema")
++                    return
++                for name, value, (lower, upper) in zip(names, positions, schema.limits):
++                    if not math.isfinite(value) or not lower <= value <= upper:
++                        self._warn_throttled(
++                            f"dropped invalid {side.value} V4 output: {name}={value:.6f}, limits=[{lower:.6f}, {upper:.6f}]"
++                        )
++                        return
+             command = RosJointState()
+             command.header = message.header
+             command.name = list(action.features["joint_names"])

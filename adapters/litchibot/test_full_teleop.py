@@ -25,6 +25,25 @@ def unused_port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
 
 
+@pytest.mark.parametrize('state',['stale','missing','current','foreign'])
+def test_manus_project_bridge_refresh_before_hardware(tmp_path,monkeypatch,state):
+    from teleop_runtime import full_launcher
+    root=tmp_path;native=root/'adapters/manus/native';native.mkdir(parents=True)
+    library=root/'adapters/manus/build/libmanus_skeleton_bridge.so'
+    library.parent.mkdir();(root/'docker').mkdir()
+    for p in (native/'manus_skeleton_bridge.cpp',native/'litchi_manus_bridge.h',native.parent/'CMakeLists.txt'):
+        p.write_text('fixture');os.utime(p,ns=(200,200))
+    if state!='missing':
+        library.write_bytes(b'fixture');os.utime(library,ns=(100,100) if state=='stale' else (300,300))
+    configured=root/'foreign.so' if state=='foreign' else library
+    (root/'docker/.env').write_text('MANUS_NATIVE_LIBRARY='+str(configured)+'\n')
+    run=Mock();monkeypatch.setattr(full_launcher.subprocess,'run',run)
+    full_launcher.ensure_manus_bridge_current(root)
+    if state in ('stale','missing'):
+        run.assert_called_once_with([str(root/'adapters/manus/scripts/build.sh')],cwd=root,check=True)
+    else:run.assert_not_called()
+
+
 def config_file(tmp_path,source='litchibot',mode='fake'):
     data=session_config(parser().parse_args(['--hand-source',source,'--control-port',str(unused_port())]))
     data['mode']=mode
@@ -73,6 +92,25 @@ def test_normal_per_side_start_stop_restart_and_fault_priority():
 def test_normal_retains_timeout_nan_limits_and_historical_discontinuity():
     l,t=normal_latch();l.gui_heartbeat(t);l.request_hand('left',True,t);hb(l,t,1)
     l.watch(t+.201,time.time());assert l.phase=='FAULT'
+
+
+def test_cold_acquisition_pause_keeps_startup_deadline_and_no_permits():
+    l=MotionLatch({'session_token':'a'*64,'expires_unix_s':float('inf')},time.monotonic(),
+        gui_controlled=True,source='manus',validation_only=False)
+    l.samples['left']=14
+    l.pause('Cold V4 discontinuity')
+    l.watch(l.started+.3,time.time())
+    assert l.phase=='WARMUP' and l.samples=={'left':0,'right':0}
+    assert not any(l.requested.values())
+    with pytest.raises(ValueError):l.request_hand('left',True,l.started+.3)
+    l.watch(l.started+30.01,time.time())
+    assert l.phase=='FAULT' and l.reason=='Acquisition timeout'
+    ready,t=normal_latch()
+    assert ready.phase=='READY'
+    ready.pause('Runtime anomaly')
+    assert ready.phase=='RECOVERING'
+    ready.watch(max(t,ready.recovery_started)+.201,time.time())
+    assert ready.phase=='FAULT'
     for values in ([float('nan')]*22,[float('inf')]*22,[3]*22,[0]*21):
         l,t=normal_latch()
         with pytest.raises(ValueError):l.command('left',JOINT_NAMES,values,1,1,'litchibot:left:test:31',t+.01,[0]*22)
@@ -178,6 +216,80 @@ def isolated_guard_paths(monkeypatch):
         monkeypatch.setattr(terminal2_bridge,'control_paths',
                             lambda permit:(root/'control.sock',root/'status.json'))
         yield
+
+
+@pytest.mark.parametrize('spike',[.456202,1.0])
+def test_manus_standby_reacquires_and_following_only_stops_extreme_jumps(tmp_path,monkeypatch,isolated_guard_paths,spike):
+    rclpy=pytest.importorskip('rclpy')
+    from geometry_msgs.msg import PoseArray,Pose
+    from sensor_msgs.msg import JointState
+    import sharpa_driver.node as original
+    from litchi_hardware.hardware.sharpa.mock import MockSharpaHand
+    from litchi_hardware.hardware.sharpa.sdk_driver import SharpaSdkHand
+    from adapters.litchibot import validation_driver
+    p,cfg=config_file(tmp_path,'manus');hands=[]
+    forbidden=Mock(side_effect=AssertionError('Physical SDK forbidden'))
+    monkeypatch.setattr(SharpaSdkHand,'_load_sdk',forbidden)
+    monkeypatch.setattr(validation_driver,'ensure_clear_graph',Mock())
+    def create(config,**kw):
+        assert kw['use_fake_hardware'] is True
+        hand=MockSharpaHand(config);hand.stop=Mock(wraps=hand.stop)
+        hand.send_action=Mock(wraps=hand.send_action);hands.append(hand);return hand
+    monkeypatch.setattr(original,'create_hand',create)
+    def exercise(node):
+        runtime=node.full
+        def feed(side,value=0):
+            key=PoseArray();key.header.stamp=node.get_clock().now().to_msg();key.poses=[Pose() for _ in range(25)]
+            runtime.keypoint(side,key)
+            target=JointState();target.header=key.header;target.name=list(JOINT_NAMES)
+            q=[0.0]*22;q[JOINT_NAMES.index('thumb_IP')]=float(value);target.position=q
+            runtime.manus(side,target)
+        for _ in range(30):feed('left');feed('right')
+        assert node.latch.phase=='READY'
+        stop_counts=[h.stop.call_count for h in hands]
+        for _ in range(6):
+            feed('right',spike);feed('left');feed('right',0)
+        assert node.latch.phase=='WARMUP' and not any(node.latch.requested.values())
+        assert not any(h['can_engage'] for h in runtime.status()['hands'].values())
+        acquisition_started=node.latch.started
+        assert runtime.reacquire_manus_standby('Raw discontinuity: repeat during acquisition')
+        assert node.latch.started==acquisition_started
+        assert [h.stop.call_count for h in hands]==stop_counts
+        assert all(h.send_action.call_count==0 for h in hands)
+        node.latch.gui_heartbeat(time.monotonic())
+        with pytest.raises(ValueError,match='acquisition not ready'):runtime.request('left',True)
+        for _ in range(30):feed('left');feed('right')
+        assert node.latch.phase=='READY'
+        assert all(h['can_engage'] for h in runtime.status()['hands'].values())
+        # Absence cannot grant a permit. OFF returns to acquisition without a
+        # native stop; a full fresh window is still required after the gap.
+        old,identity,when=node.latch.last['right']
+        node.latch.last['right']=(old,identity,when-.3)
+        assert not any(h['can_engage'] for h in runtime.status()['hands'].values())
+        with pytest.raises(ValueError,match='stale'):runtime.request('left',True)
+        runtime.tick()
+        assert node.latch.phase=='WARMUP'
+        assert [h.stop.call_count for h in hands]==stop_counts
+        for _ in range(30):feed('left');feed('right')
+        assert node.latch.phase=='READY'
+        node.latch.gui_heartbeat(time.monotonic());runtime.request('right',True)
+        feed('right',spike)
+        if spike<.8:
+            for _ in range(6):feed('right',0);feed('right',spike)
+            assert node.latch.phase=='READY' and node.latch.requested['right']
+            assert [h.stop.call_count for h in hands]==stop_counts
+            assert all(h.send_action.call_count==0 for h in hands)
+            return
+        assert node.latch.phase=='FAULT'
+        assert not runtime.reacquire_manus_standby('Do not clear FAULT')
+        assert node.latch.phase=='FAULT'
+        assert all(h.stop.call_count>n for h,n in zip(hands,stop_counts))
+        assert all(h.send_action.call_count==0 for h in hands)
+    monkeypatch.setattr(rclpy,'spin',exercise)
+    validation_driver.main(['--full-config',str(p),'--ros-args','-p','use_fake_hardware:=true',
+        '-p','enable_left:=true','-p','enable_right:=true','-p','left_serial:=fake-left',
+        '-p','right_serial:=fake-right','-p','stop_on_command_timeout_s:=0.2'])
+    forbidden.assert_not_called()
 
 
 @pytest.mark.parametrize('source',['manus','litchibot'])
@@ -297,7 +409,8 @@ def test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch(tmp_path,monkey
                 assert node.latch.phase=='ARMED' and node.validation_send_count==3,node.latch.reason
                 assert hands[0].read_joint_state().position[18]==(.143064 if fault=='diagnostic_143' else .179)
             else:
-                assert node.latch.phase=='RECOVERING' and node.validation_send_count==2
+                assert node.latch.phase=='ARMED' and node.validation_send_count==3
+                assert hands[0].read_joint_state().position[18]==(.143064 if fault=='diagnostic_143' else .179)
             return
         if fault=='disconnect':runtime.disconnected()
         elif fault=='timeout':
@@ -306,11 +419,23 @@ def test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch(tmp_path,monkey
             node.service_guard()
         elif fault=='moderate':
             feed('left',33,moderate=True)
-            if source=='manus':assert node.latch.phase=='RECOVERING'
+            if source=='manus':
+                assert node.latch.phase=='ARMED' and node.latch.requested['left']
+                assert hands[0].read_joint_state().position[18]==.185638
             else:
                 assert node.latch.side_state('left',time.monotonic())=='ACTIVE'
                 assert hands[0].read_joint_state().position[18]==.185638
-            assert node.validation_send_count==(2 if source=='manus' else 3)
+            assert node.validation_send_count==3
+            if source=='manus':
+                stops=[h.stop.call_count for h in hands]
+                for offset in range(12):
+                    time.sleep(.01);heartbeat(6+offset)
+                    feed('left',34+offset,target=.4 if offset%2==0 else 0)
+                    after=hands[0].read_joint_state().position[18]
+                    assert after==(.4 if offset%2==0 else 0)
+                    assert node.latch.phase=='ARMED' and node.latch.requested['left']
+                assert node.validation_send_count==15
+                assert [h.stop.call_count for h in hands]==stops
             return
         else:feed('left',33,jump=True)
         assert node.latch.phase=='FAULT' and all(h.stop.called for h in hands)

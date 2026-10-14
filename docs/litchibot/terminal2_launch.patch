@@ -117,7 +117,7 @@
          DeclareLaunchArgument(
              "use_fake_hardware",
              default_value="false",
-@@ -95,13 +192,16 @@
+@@ -95,14 +192,18 @@
      ]
  
      manus = Node(
@@ -133,9 +133,11 @@
 +                    "'",LaunchConfiguration('full_fake_input',default='false'),"' == 'true' if '",full,
 +                    "' == 'true' else ('",dry_run,"' == 'true' or '",use_fake,"'.lower() == 'true')"]),value_type=bool),
                  "backend": LaunchConfiguration("manus_backend"),
++                "reliable_keypoints": ParameterValue(full, value_type=bool),
                  "endpoint": LaunchConfiguration("manus_endpoint"),
                  "manage_client": LaunchConfiguration("manus_manage_client"),
-@@ -129,9 +229,13 @@
+                 "client_executable": LaunchConfiguration(
+@@ -129,15 +230,24 @@
      )
  
      retarget = Node(
@@ -149,7 +151,18 @@
          output="screen",
          parameters=[
              {
-@@ -149,13 +253,14 @@
+                 "enable_left": enable_left,
+                 "enable_right": enable_right,
+                 "backend": LaunchConfiguration("retarget_backend"),
++                # Reserve transport time within the guarded 200 ms deadline.
++                # Standalone legacy mode retains its original output behavior.
++                "max_output_age_s": ParameterValue(PythonExpression([
++                    "0.15 if '", full, "' == 'true' else 0.0"
++                ]), value_type=float),
+                 "smoothing_alpha": LaunchConfiguration("smoothing_alpha"),
+                 "flexion_scale": LaunchConfiguration("flexion_scale"),
+                 "abduction_scale": LaunchConfiguration("abduction_scale"),
+@@ -149,13 +259,14 @@
      )
  
      sharpa = Node(
@@ -165,7 +178,7 @@
                  "enable_left": enable_left,
                  "enable_right": enable_right,
                  "left_serial": LaunchConfiguration("left_sharpa_serial"),
-@@ -176,11 +281,50 @@
+@@ -176,11 +287,50 @@
          ],
      )
  

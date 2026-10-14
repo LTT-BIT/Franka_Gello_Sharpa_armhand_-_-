@@ -81,6 +81,7 @@ class RosbagDataCollectorNode(Node):
             self.config.topics,
             trim_start_sec=self.config.trim_start_sec,
             trim_end_sec=self.config.trim_end_sec,
+            continuity_enabled=self.config.continuity_enabled,
         )
 
 
@@ -116,6 +117,7 @@ class RosbagEpisodeRecorder:
         self._validation_report: dict[str, Any] = {}
         self._milestones: list[dict[str, Any]] = []
         self._source_recording_id: str | None = None
+        self._live_continuity_report: dict[str, Any] = {}
 
     @property
     def active(self) -> bool:
@@ -171,6 +173,7 @@ class RosbagEpisodeRecorder:
         self._milestones = []
         self._source_recording_id = uuid.uuid4().hex
         self._validation_report = {}
+        self._live_continuity_report = {}
         self._last_bag_dir = bag_dir
         self._state_path = self._output_dir / f".{bag_dir.name}.collection_state.json"
         self._write_state(
@@ -217,6 +220,9 @@ class RosbagEpisodeRecorder:
             raise
         self._current_bag_dir = bag_dir
         return bag_dir
+
+    def set_live_continuity(self, report: dict[str, Any]) -> None:
+        self._live_continuity_report = report
 
     def stop(self, *, interrupted: bool = False) -> Path | None:
         process = self._process
@@ -270,6 +276,7 @@ class RosbagEpisodeRecorder:
             self._node.get_logger().info(
                 f"Validation finished in {time.monotonic() - validation_started:.2f}s."
             )
+        failures = tuple(failures) + tuple(self._live_continuity_report.get("failures", []))
         self._validation_report = validation_report
         outcome = recording_outcome(
             exit_code=int(process.returncode or 0),
@@ -282,6 +289,8 @@ class RosbagEpisodeRecorder:
             )
         for failure in outcome.failures:
             self._node.get_logger().error(f"[validation FAILED] {failure}")
+        for warning in validation_report.get("source_warnings", ()):
+            self._node.get_logger().warn(f"[source warning] {warning}")
         boundary_warnings = validation_report.get("boundary_warnings", ())
         transport_warnings = validation_report.get("transport_warnings", ())
         for warning in boundary_warnings:
@@ -332,6 +341,11 @@ class RosbagEpisodeRecorder:
         validation_report: dict[str, Any] | None = None,
     ) -> None:
         report = validation_report or {}
+        live = self._live_continuity_report
+        # Persist the fault even on unexpected exit/discard and future revalidation.
+        failures = list(dict.fromkeys([*failures, *live.get("failures", [])]))
+        if live.get("auto_stop_reason") and state in {"finalized", "interrupted"}:
+            state, finalized = "incomplete", False
         payload = {
             **self._provenance,
             "source_bag": str(bag_dir.resolve()),
@@ -342,6 +356,9 @@ class RosbagEpisodeRecorder:
             "finalized": finalized,
             "failures": failures,
             "validation_report": report,
+            "live_continuity": live,
+            "auto_stop_reason": live.get("auto_stop_reason"),
+            "source_warnings": list(dict.fromkeys([*report.get("source_warnings", []), *live.get("source_warnings", [])])),
             "validation_policy": "source_header_continuity_trimmed_boundary_v3",
             "boundary_warnings": list(report.get("boundary_warnings") or []),
             "transport_warnings": list(report.get("transport_warnings") or []),
@@ -404,11 +421,18 @@ def main(args=None):
         preflight=node.preflight_failures,
         postflight=node.postflight,
     )
+    live = None
+    if node.config.continuity_enabled:
+        from .live_continuity import LiveContinuity
+        live = LiveContinuity(node)
+        node.continuity_monitor = live.monitor
     controller = CollectorController(node, recorder)
     control_server = CollectorControlServer(
         (node.control_bind_host, node.control_port), controller
     )
     control_server.start_in_thread()
+    if live is not None:
+        live.start(node, controller)
 
     try:
         with KeyboardInterface() as keyboard:
@@ -450,6 +474,9 @@ def main(args=None):
             controller.stop_if_present(interrupted=True)
         else:
             node.get_logger().info("Shutting down.")
+        controller.wait_for_finalization()
+        if live is not None:
+            live.close()
         control_server.shutdown()
         control_server.server_close()
         node.destroy_node()
@@ -462,7 +489,7 @@ def _toggle_recording(
     controller: CollectorController,
 ) -> None:
     if controller.status()["active"]:
-        controller.stop()
+        controller.dispatch("stop")
         _log_ready_banner(node)
         return
 
