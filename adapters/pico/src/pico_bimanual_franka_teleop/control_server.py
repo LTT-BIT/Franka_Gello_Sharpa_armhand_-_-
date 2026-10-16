@@ -43,12 +43,15 @@ class OperatorConsole:
         # motion and repeatedly sends the target captured by the coordinator.
         self.arm_hold = {side: False for side in SIDES}
         self._arm_hold_resume = {side: False for side in SIDES}
+        self.home_locked = False
+        self.episode_home: dict = {}
         self.hand_active = {side: False for side in SIDES}
         self.requests = {
             "open_hands": False,
             "open_left_hand": False,
             "open_right_hand": False,
             "reset": False,
+            "episode_home": False,
             "reset_left": False,
             "reset_right": False,
             "capture_home_left": False,
@@ -97,6 +100,8 @@ class OperatorConsole:
         if target not in {"arm", "hand", "both"}:
             raise ValueError(f"unknown activation target: {target}")
         with self._lock:
+            if self.home_locked and engaged and target in {"arm", "both"}:
+                raise ValueError("Home not confirmed complete; arm following is locked")
             if target in {"arm", "both"}:
                 self.active[side] = engaged
                 # Start/stop is an explicit exit from hold. Re-engagement is
@@ -112,6 +117,8 @@ class OperatorConsole:
         if not isinstance(held, bool):
             raise ValueError("enabled must be a boolean")
         with self._lock:
+            if self.home_locked and not held:
+                raise ValueError("Home not confirmed complete; arm Hold is locked")
             if held:
                 if not self.arm_hold[side]:
                     self._arm_hold_resume[side] = self.active[side]
@@ -123,6 +130,43 @@ class OperatorConsole:
                 self._arm_hold_resume[side] = False
         self.show(f"{side} arm: {'holding target' if held else 'hold released'}")
 
+    def begin_arm_home(self) -> None:
+        """Keep existing arm permits behind Hold while Home owns the bus."""
+        with self._lock:
+            self.home_locked = True
+            for side in SIDES:
+                self._arm_hold_resume[side] = self.active[side] or self._arm_hold_resume[side]
+                self.active[side] = False
+                self.arm_hold[side] = True
+
+    def finish_arm_home(self, succeeded: bool) -> None:
+        with self._lock:
+            # Only a confirmed successful reset permits a new pedal release.
+            self.home_locked = not succeeded
+            # begin_arm_home already latched Hold. Preserve any explicit
+            # Stop/DISENGAGE ALL issued while the reset was running.
+            for side in SIDES:
+                self.active[side] = False
+
+    def queue_episode_home(self, arguments: dict) -> dict:
+        job_id = arguments.get("id")
+        if not isinstance(job_id, str) or not job_id or len(job_id) > 100:
+            raise ValueError("invalid episode Home id")
+        task = require_operator_task(arguments.get("task", DEFAULT_OPERATOR_TASK))
+        with self._lock:
+            if self.episode_home.get("id") == job_id:
+                return dict(self.episode_home)
+            if self.episode_home.get("state") in {"queued", "running"}:
+                raise ValueError("episode Home is already in progress")
+            self.episode_home = {"id": job_id, "task": task, "state": "queued", "message": "等待 Home"}
+            self.requests["episode_home"] = dict(self.episode_home)
+            return dict(self.episode_home)
+
+    def update_episode_home(self, job_id: str, state: str, message: str = "") -> None:
+        with self._lock:
+            if self.episode_home.get("id") == job_id and self.episode_home.get("state") in {"queued", "running"}:
+                self.episode_home.update(state=state, message=message)
+
     def request(self, name: str, value=True) -> None:
         with self._lock:
             if name not in self.requests:
@@ -131,6 +175,8 @@ class OperatorConsole:
 
     def disable_all(self, reason: str) -> None:
         with self._lock:
+            if self.episode_home.get("state") in {"queued", "running"}:
+                self.episode_home.update(state="failed", message=reason)
             self.active = {side: False for side in SIDES}
             self.arm_hold = {side: False for side in SIDES}
             self._arm_hold_resume = {side: False for side in SIDES}
@@ -164,6 +210,7 @@ class OperatorConsole:
 
     # -- frontend-facing snapshot ----------------------------------------
 
+
     def snapshot(self) -> dict:
         with self._lock:
             return {
@@ -171,6 +218,9 @@ class OperatorConsole:
                 "feedback": list(self._feedback),
                 "active": dict(self.active),
                 "arm_hold": dict(self.arm_hold),
+                "arm_authorized": {side: self.active[side] or self._arm_hold_resume[side] for side in SIDES},
+                "home_locked": self.home_locked,
+                "episode_home": dict(self.episode_home),
                 "hand_active": dict(self.hand_active),
                 "sides": list(self.sides),
             }
@@ -257,6 +307,14 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
 
     # -- commands ---------------------------------------------------------
 
+    def _queue_episode_home(self, arguments: dict) -> dict:
+        # The short-lived coordinator connection must never substitute for
+        # the persistent operator frontend or mask its disconnect guard.
+        with self._clients_lock:
+            if self._clients < 2:
+                raise ValueError("自动 Home 需要 Operator GUI 保持连接，请连接后按 B 重试")
+        return self.keyboard.queue_episode_home(arguments)
+
     def _disengage_all(self) -> None:
         self.keyboard.disable_all("operator frontend")
         self.keyboard.request("abort_action")
@@ -311,6 +369,7 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
                 left="open_left_hand",
                 right="open_right_hand",
             ),
+            "episode_home": lambda: self._queue_episode_home(arguments),
             "home_arm": lambda: self._scoped_request(
                 arguments,
                 both="reset",

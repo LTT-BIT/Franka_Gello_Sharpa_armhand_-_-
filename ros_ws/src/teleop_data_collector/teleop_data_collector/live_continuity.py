@@ -7,6 +7,7 @@ import time
 
 from .continuity import ContinuityMonitor
 from .image_metadata import read_image_metadata
+from .camera_stream_health import CameraReadiness
 
 
 class LiveContinuity:
@@ -18,6 +19,7 @@ class LiveContinuity:
 
         required = [topic for topic in node.config.topics if topic.required]
         self.monitor = ContinuityMonitor([topic.topic for topic in required])
+        self.readiness = CameraReadiness([topic.topic for topic in required])
         self._subscriptions = []
         self._stop = threading.Event()
         self._thread = None
@@ -39,7 +41,8 @@ class LiveContinuity:
             message_type = get_message(topic.type_name)
 
             def callback(serialized, *, item=topic, cls=message_type):
-                if not self.monitor.active:
+                camera = self.readiness.observes(item.topic)
+                if not self.monitor.active and not camera:
                     return
                 now = time.monotonic()
                 try:
@@ -52,9 +55,15 @@ class LiveContinuity:
                         message = deserialize_message(serialized, cls)
                         stamp = message.header.stamp
                         header_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
-                    self.monitor.observe_message(item.topic, message, header_ns, now)
+                    if camera:
+                        self.readiness.observe(item.topic, header_ns, now)
+                    if self.monitor.active:
+                        self.monitor.observe_message(item.topic, message, header_ns, now)
                 except Exception as error:
-                    self.monitor.invalid(item.topic, f"消息元数据无效: {error}", now)
+                    if camera:
+                        self.readiness.observe(item.topic, None, now)
+                    if self.monitor.active:
+                        self.monitor.invalid(item.topic, f"消息元数据无效: {error}", now)
 
             self._subscriptions.append(node.create_subscription(message_type, topic.topic, callback, qos, raw=True))
 

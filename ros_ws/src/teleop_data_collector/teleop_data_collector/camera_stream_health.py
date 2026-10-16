@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 import sys
@@ -8,7 +9,7 @@ import time
 from typing import Any
 
 
-DEFAULT_STABLE_SEC = 5.0
+DEFAULT_STABLE_SEC = 3.0
 DEFAULT_MAX_GAP_MS = 150.0
 CAMERA_STREAMS = (
     ("/cam0/color/image_raw", 18.0),
@@ -16,6 +17,33 @@ CAMERA_STREAMS = (
     ("/cam1/color/image_raw", 25.0),
     ("/cam2/color/image_raw", 25.0),
 )
+
+
+class CameraReadiness:
+    """Continuously maintained pre-episode gate; never relaxes episode checks."""
+
+    def __init__(self, topics: list[str]):
+        frequencies = dict(CAMERA_STREAMS)
+        self._windows = {topic: StreamWindow(topic, frequencies[topic], require_source_timestamps=True)
+                         for topic in topics if topic in frequencies}
+        self._lock = threading.Lock()
+
+    def observes(self, topic: str) -> bool:
+        return topic in self._windows
+
+    def observe(self, topic: str, header_ns: int | None, now: float) -> None:
+        with self._lock:
+            self._windows[topic].observe(now, max_gap_sec=DEFAULT_MAX_GAP_MS / 1000,
+                                         header_ns=header_ns)
+
+    def snapshot(self, now: float) -> dict[str, Any]:
+        with self._lock:
+            waiting = [topic for topic, window in self._windows.items()
+                       if not window.ready(now, stable_sec=DEFAULT_STABLE_SEC,
+                                           max_gap_sec=DEFAULT_MAX_GAP_MS / 1000)]
+            return {"ready": not waiting, "waiting_topics": waiting,
+                    "stable_sec": DEFAULT_STABLE_SEC, "max_receive_gap_ms": DEFAULT_MAX_GAP_MS,
+                    "message": (f"等待相机连续稳定 {DEFAULT_STABLE_SEC:g} 秒：" + ", ".join(waiting)) if waiting else ""}
 
 
 @dataclass

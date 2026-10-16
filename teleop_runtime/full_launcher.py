@@ -1,4 +1,4 @@
-"""Host lifecycle owner. Reuses the two production wrappers; never sends motion."""
+"""Host lifecycle owner. Reuses production wrappers and coordinates post-recording arm Home."""
 from __future__ import annotations
 import argparse
 import ctypes
@@ -85,6 +85,8 @@ def ensure_manus_bridge_current(root=ROOT):
 
 
 def preflight(port):
+    from teleop_runtime.dds_buffers import check_receive_buffer
+    check_receive_buffer()
     arm_port=deployment_port(ROOT,'TELEOP_CONTROL_PORT',5590)
     recorder_port=deployment_port(ROOT,'COLLECTION_CONTROL_PORT',5592)
     preset_port=deployment_port(ROOT,'PRESET_IK_PORT',5591)
@@ -142,6 +144,7 @@ class FullLauncher:
         self.root=Path(root);self.path=Path(config_path);self.config=config
         self.children=[];self.stopping=False;self.owned={};self.subreaper=None
         self.exit_socket=None;self.exit_path=self.path.with_name('launcher-exit.sock')
+        self.episode_home_bridge=None
         self.owns_docker=(self.root/'docker/compose.yaml').is_file()
 
     def start(self):
@@ -164,6 +167,13 @@ class FullLauncher:
         self.children.append(subprocess.Popen(hands,cwd=self.root,env=env,start_new_session=True))
         self.children.append(subprocess.Popen([str(self.root/'ops/run/run_gello_arms_only.sh')],
                                              cwd=self.root,env=env,start_new_session=True))
+        if self.owns_docker:
+            from teleop_runtime.episode_home import EpisodeHomeBridge
+            self.episode_home_bridge=EpisodeHomeBridge(
+                ('127.0.0.1',deployment_port(self.root,'COLLECTION_CONTROL_PORT',5592)),
+                (os.environ.get('TELEOP_CONTROL_HOST','127.0.0.1'),
+                 deployment_port(self.root,'TELEOP_CONTROL_PORT',5590)), owner=self.config['token'][:16])
+            self.episode_home_bridge.start()
 
     def gui_closed(self):
         if self.exit_socket is None:return False
@@ -228,9 +238,14 @@ class FullLauncher:
     def close(self):
         if self.stopping:return
         self.stopping=True
+        if self.episode_home_bridge is not None:
+            self.episode_home_bridge.stopping.set()
         if self.exit_socket is not None:
             self.exit_socket.close();self.exit_path.unlink(missing_ok=True);self.exit_socket=None
         self.remember();self.revoke();errors=[]
+        if self.episode_home_bridge is not None and self.episode_home_bridge.thread is not None:
+            self.episode_home_bridge.thread.join(timeout=3)
+
         # Let the driver disable devices before ROS launch begins its 5s/10s
         # escalation. This channel does not depend on the ROS executor.
         try:

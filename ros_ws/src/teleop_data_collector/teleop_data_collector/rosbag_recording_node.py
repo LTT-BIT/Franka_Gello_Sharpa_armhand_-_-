@@ -109,6 +109,7 @@ class RosbagEpisodeRecorder:
         self._provenance = dict(provenance or {})
         self._preflight = preflight
         self._postflight = postflight
+        self.on_recording_stopped = lambda: None
         self._process: subprocess.Popen[bytes] | None = None
         self._current_bag_dir: Path | None = None
         self._generated_qos_path: Path | None = None
@@ -211,6 +212,7 @@ class RosbagEpisodeRecorder:
             )
         except Exception:
             self._remove_generated_qos_file()
+            self.on_recording_stopped()
             self._write_state(
                 bag_dir,
                 state="interrupted",
@@ -264,6 +266,7 @@ class RosbagEpisodeRecorder:
         self._process = None
         self._current_bag_dir = None
         self._remove_generated_qos_file()
+        self.on_recording_stopped()
         failures = ()
         validation_report: dict[str, Any] = {}
         if self._postflight is not None and int(process.returncode or 0) == 0:
@@ -426,6 +429,7 @@ def main(args=None):
         from .live_continuity import LiveContinuity
         live = LiveContinuity(node)
         node.continuity_monitor = live.monitor
+        node.collection_readiness = live.readiness
     controller = CollectorController(node, recorder)
     control_server = CollectorControlServer(
         (node.control_bind_host, node.control_port), controller

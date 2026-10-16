@@ -10,7 +10,7 @@ import threading
 import tempfile
 import time
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -243,7 +243,7 @@ def isolated_guard_paths(monkeypatch):
 
 
 @pytest.mark.parametrize('spike',[.456202,1.0])
-def test_manus_standby_reacquires_and_following_only_stops_extreme_jumps(tmp_path,monkeypatch,isolated_guard_paths,spike):
+def test_manus_standby_does_not_latch_and_legacy_valid_jumps_continue(tmp_path,monkeypatch,isolated_guard_paths,spike):
     rclpy=pytest.importorskip('rclpy')
     from geometry_msgs.msg import PoseArray,Pose
     from sensor_msgs.msg import JointState
@@ -263,60 +263,29 @@ def test_manus_standby_reacquires_and_following_only_stops_extreme_jumps(tmp_pat
     def exercise(node):
         runtime=node.full
         def feed(side,value=0):
-            key=PoseArray();key.header.stamp=node.get_clock().now().to_msg();key.poses=[Pose() for _ in range(25)]
-            runtime.keypoint(side,key)
-            target=JointState();target.header=key.header;target.name=list(JOINT_NAMES)
-            q=[0.0]*22;q[JOINT_NAMES.index('thumb_IP')]=float(value);target.position=q
+            target=JointState();target.header.stamp=node.get_clock().now().to_msg()
+            target.name=list(JOINT_NAMES);q=[0.0]*22
+            q[JOINT_NAMES.index('thumb_IP')]=float(value);target.position=q
             runtime.manus(side,target)
-        for _ in range(30):feed('left');feed('right')
+        for _ in range(6):feed('right',spike);feed('left');feed('right',0)
+        assert node.latch.phase=='READY' and node.validation_send_count==0
+        with patch('adapters.manus.normal_hand_runtime.time.monotonic',return_value=time.monotonic()+600):
+            runtime.tick()
         assert node.latch.phase=='READY'
-        stop_counts=[h.stop.call_count for h in hands]
-        for _ in range(6):
-            feed('right',spike);feed('left');feed('right',0)
-        assert node.latch.phase=='WARMUP' and not any(node.latch.requested.values())
-        assert not any(h['can_engage'] for h in runtime.status()['hands'].values())
-        acquisition_started=node.latch.started
-        assert runtime.reacquire_manus_standby('Raw discontinuity: repeat during acquisition')
-        assert node.latch.started==acquisition_started
-        assert [h.stop.call_count for h in hands]==stop_counts
-        assert all(h.send_action.call_count==0 for h in hands)
-        node.latch.gui_heartbeat(time.monotonic())
-        with pytest.raises(ValueError,match='acquisition not ready'):runtime.request('left',True)
-        for _ in range(30):feed('left');feed('right')
-        assert node.latch.phase=='READY'
-        assert all(h['can_engage'] for h in runtime.status()['hands'].values())
-        # Absence cannot grant a permit. OFF returns to acquisition without a
-        # native stop; a full fresh window is still required after the gap.
-        old,identity,when=node.latch.last['right']
-        node.latch.last['right']=(old,identity,when-.3)
-        assert not any(h['can_engage'] for h in runtime.status()['hands'].values())
-        with pytest.raises(ValueError,match='stale'):runtime.request('left',True)
-        runtime.tick()
-        assert node.latch.phase=='WARMUP'
-        assert [h.stop.call_count for h in hands]==stop_counts
-        for _ in range(30):feed('left');feed('right')
-        assert node.latch.phase=='READY'
-        node.latch.gui_heartbeat(time.monotonic());runtime.request('right',True)
-        feed('right',spike)
-        if spike<.8:
-            for _ in range(6):feed('right',0);feed('right',spike)
-            assert node.latch.phase=='READY' and node.latch.requested['right']
-            assert [h.stop.call_count for h in hands]==stop_counts
-            assert all(h.send_action.call_count==0 for h in hands)
-            return
-        assert node.latch.phase=='FAULT'
-        assert not runtime.reacquire_manus_standby('Do not clear FAULT')
-        assert node.latch.phase=='FAULT'
-        assert all(h.stop.call_count>n for h,n in zip(hands,stop_counts))
-        assert all(h.send_action.call_count==0 for h in hands)
+        runtime.request('right',True)
+        for _ in range(6):feed('right',spike);feed('right',0)
+        assert node.latch.phase=='READY' and node.validation_send_count==12
+        assert node.latch.requested['right'] and not node.latch.requested['left']
+        runtime.request('right',False);feed('right',spike)
+        assert node.validation_send_count==12
     monkeypatch.setattr(rclpy,'spin',exercise)
     validation_driver.main(['--full-config',str(p),'--ros-args','-p','use_fake_hardware:=true',
         '-p','enable_left:=true','-p','enable_right:=true','-p','left_serial:=fake-left',
-        '-p','right_serial:=fake-right','-p','stop_on_command_timeout_s:=0.2'])
+        '-p','right_serial:=fake-right','-p','stop_on_command_timeout_s:=0.0'])
     forbidden.assert_not_called()
 
 
-@pytest.mark.parametrize('source',['manus','litchibot'])
+@pytest.mark.parametrize('source',['litchibot'])
 @pytest.mark.parametrize('mode',['fake','normal'])
 @pytest.mark.parametrize('fault',['disconnect','timeout','jump','moderate','acquisition','diagnostic_143','diagnostic_179','per_side_recovery','duplicate_driver','source_disconnect','driver_disconnect','reanchor','repeat_hard','partial','stale_future','heartbeat_paused','unrecoverable_sender'])
 def test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch(tmp_path,monkeypatch,source,mode,fault,isolated_guard_paths,capfd):
@@ -346,129 +315,8 @@ def test_full_guard_original_fake_driver_no_sdk_and_gui_dispatch(tmp_path,monkey
         node.get_subscriptions_info_by_topic=lambda topic:[]
         node.get_node_names_and_namespaces=lambda:[('sharpa_driver','/')]
         runtime=node.full
-        if source=='litchibot':
-            from adapters.litchibot.test_normal_driver import exercise_normal_driver
-            exercise_normal_driver(node,fault,hands,mode)
-            return
-        assert runtime.server.reply_timeout is None
-        assert runtime.status()['normal_forwarding'] is True
-        def feed(side,sequence,jump=False,moderate=False,target=0):
-            q=[0.0]*22
-            q[18]=float(target)
-            if jump:q[18]=1.5708
-            if moderate:q[18]=.185638
-            if source=='litchibot':
-                row=solved_packet(side,sequence);row.update(positions_rad=q,source_received_monotonic_ns=time.monotonic_ns())
-                if jump:row['glove_joint_angles_rad'][8]=10.0
-                msg=String();msg.data=json.dumps(row);runtime.litchibot(side,msg)
-            else:
-                key=PoseArray();key.header.stamp=node.get_clock().now().to_msg();key.poses=[Pose() for _ in range(25)]
-                runtime.keypoint(side,key)
-                target=JointState();target.header=key.header;target.name=list(JOINT_NAMES);target.position=q
-                runtime.manus(side,target)
-        for seq in range(1,31):
-            for side in ('left','right'):feed(side,seq)
-        assert node.latch.phase=='READY',node.latch.reason
-        assert all(not h.send_action.called for h in hands)
-        def heartbeat(seq):
-            runtime.dispatch({'command':'heartbeat','monotonic_ns':time.monotonic_ns(),'sequence':seq})
-        heartbeat(1);runtime.dispatch({'command':'engage_hand','arguments':{'side':'left'}})
-        if fault=='acquisition':
-            feed('left',31,target=.08);feed('left',32,target=.08)
-            assert node.latch.phase=='READY' and node.validation_send_count==0
-            heartbeat(2);feed('left',33,target=.08)
-            assert node.latch.phase=='ARMED' and node.validation_send_count==1,node.latch.reason
-            if source=='litchibot':assert hands[0].read_joint_state().position[18]==.08
-            return
-        heartbeat(2)
-        feed('left',31);feed('right',31)
-        assert hands[0].send_action.call_count==1 and hands[1].send_action.call_count==0, node.latch.reason
-        runtime.dispatch({'command':'engage_hand','arguments':{'side':'right'}});heartbeat(3);feed('right',32)
-        assert hands[1].send_action.call_count==1
-        if fault in ('duplicate_driver','source_disconnect','driver_disconnect'):
-            stopped=[h.stop.call_count for h in hands]
-            if fault=='duplicate_driver':node.get_node_names_and_namespaces=lambda:[('sharpa_driver','/'),('sharpa_driver','/extra')]
-            else:
-                original_publishers=node.get_publishers_info_by_topic
-                failed_topic=f'/teleop/sharpa/right/'+('source' if source=='litchibot' else 'target') if fault=='source_disconnect' else '/sharpa/right/joint_states'
-                node.get_publishers_info_by_topic=lambda topic:[] if topic==failed_topic else original_publishers(topic)
-            node.service_guard()
-            assert node.latch.phase=='FAULT' and not any(node.latch.requested.values())
-            assert all(h.stop.call_count==before+1 for h,before in zip(hands,stopped))
-            return
-        if fault=='repeat_hard':
-            if source=='manus':return
-            stopped=[h.stop.call_count for h in hands]
-            for seq in range(33,213):feed('right',seq,jump=True)
-            assert node.latch.phase=='FAULT'
-            assert all(h.stop.call_count==before+1 for h,before in zip(hands,stopped))
-            return
-        if fault in ('per_side_recovery','reanchor'):
-            if source=='manus':return  # original Manus policy remains unchanged
-            stopped=[h.stop.call_count for h in hands]
-            moderate=fault=='per_side_recovery'
-            if fault=='reanchor':
-                old=runtime.raw.previous['right']
-                runtime.raw.previous['right']=(*old[:4],old[4]-14_800_000_000)
-            if moderate:
-                for seq,value in enumerate((.4,0,.4,0),33):feed('right',seq,target=value)
-            else:feed('right',33)
-            assert node.latch.side_state('right',time.monotonic())=='SOFT_HOLD'
-            assert node.latch.side_state('left',time.monotonic())=='ACTIVE'
-            assert hands[0].stop.call_count==stopped[0] and hands[1].stop.call_count==stopped[1]+1
-            for offset in range(30):
-                heartbeat(4+offset);feed('left',32+offset);feed('right',37+offset if moderate else 34+offset)
-                if fault=='reanchor':assert 0<runtime.raw.context['right']['dt']<.2
-            assert hands[0].send_action.call_count==31 and hands[1].send_action.call_count==(4 if moderate else 1)
-            assert node.latch.side_state('right',time.monotonic())=='ACTIVE' and node.latch.requested['right']
-            heartbeat(34);feed('right',67 if moderate else 64)
-            assert hands[1].send_action.call_count==(5 if moderate else 2) and node.latch.phase=='ARMED',node.latch.reason
-            return
-        runtime.dispatch({'command':'disengage_hand','arguments':{'side':'left'}});feed('left',32)
-        assert hands[0].send_action.call_count==1
-        runtime.dispatch({'command':'disengage_all'});assert not any(node.latch.requested.values())
-        assert node.latch.phase=='READY' and runtime.status()['hardware_send']==(0 if mode=='fake' else 2)
-        heartbeat(4);runtime.dispatch({'command':'engage_hand','arguments':{'side':'left'}});heartbeat(5)
-        if fault in ('diagnostic_143','diagnostic_179'):
-            feed('left',33,target=.143064 if fault=='diagnostic_143' else .179)
-            if source=='litchibot':
-                assert node.latch.phase=='ARMED' and node.validation_send_count==3,node.latch.reason
-                assert hands[0].read_joint_state().position[18]==(.143064 if fault=='diagnostic_143' else .179)
-            else:
-                assert node.latch.phase=='ARMED' and node.validation_send_count==3
-                assert hands[0].read_joint_state().position[18]==(.143064 if fault=='diagnostic_143' else .179)
-            return
-        if fault=='disconnect':runtime.disconnected()
-        elif fault=='timeout':
-            node.latch.last={s:(v[0],v[1],time.monotonic()-1) for s,v in node.latch.last.items()}
-            if source=='litchibot':node.latch.source_seen={s:time.monotonic()-1 for s in ('left','right')}
-            node.service_guard()
-        elif fault=='moderate':
-            feed('left',33,moderate=True)
-            if source=='manus':
-                assert node.latch.phase=='ARMED' and node.latch.requested['left']
-                assert hands[0].read_joint_state().position[18]==.185638
-            else:
-                assert node.latch.side_state('left',time.monotonic())=='ACTIVE'
-                assert hands[0].read_joint_state().position[18]==.185638
-            assert node.validation_send_count==3
-            if source=='manus':
-                stops=[h.stop.call_count for h in hands]
-                for offset in range(12):
-                    time.sleep(.01);heartbeat(6+offset)
-                    feed('left',34+offset,target=.4 if offset%2==0 else 0)
-                    after=hands[0].read_joint_state().position[18]
-                    assert after==(.4 if offset%2==0 else 0)
-                    assert node.latch.phase=='ARMED' and node.latch.requested['left']
-                assert node.validation_send_count==15
-                assert [h.stop.call_count for h in hands]==stops
-            return
-        else:feed('left',33,jump=True)
-        assert node.latch.phase=='FAULT' and all(h.stop.called for h in hands)
-        feed('left',34)
-        assert node.validation_send_count==2
-        with pytest.raises(ValueError):runtime.dispatch({'command':'engage_hand','arguments':{'side':'right'}})
-        with pytest.raises(ValueError,match='Open hand'):runtime.dispatch({'command':'open_hand'})
+        from adapters.litchibot.test_normal_driver import exercise_normal_driver
+        exercise_normal_driver(node,fault,hands,mode)
     monkeypatch.setattr(rclpy,'spin',exercise)
     validation_driver.main(['--full-config',str(p),'--ros-args','-p',f'use_fake_hardware:={str(mode=="fake").lower()}',
         '-p','enable_left:=true','-p','enable_right:=true','-p','left_serial:='+('testL' if mode=='normal' else 'fake-left'),
@@ -771,3 +619,92 @@ raise SystemExit(FullLauncher(sys.argv[1],p,json.loads(p.read_text())).run())
     finally:
         if process.poll() is None:process.send_signal(signal.SIGINT);process.wait(timeout=28)
         if master is not None:os.close(master)
+
+
+@pytest.mark.parametrize('selection,active_other', [('left',False),('both',False),('left',True)])
+def test_manus_explicit_open_uses_original_sender_and_keeps_permits_off(
+        tmp_path, monkeypatch, isolated_guard_paths, selection, active_other):
+    rclpy = pytest.importorskip('rclpy')
+    from sensor_msgs.msg import JointState
+    from geometry_msgs.msg import Pose, PoseArray
+    from adapters.litchibot import validation_driver
+    from adapters.litchibot.test_open_hand import START
+    import sharpa_driver.node as original
+    from litchi_hardware.hardware.sharpa.mock import MockSharpaHand
+    from litchi_hardware.hardware.sharpa.sdk_driver import SharpaSdkHand
+    path, cfg = config_file(tmp_path, 'manus', 'fake')
+    sdk = Mock(side_effect=AssertionError('Physical SDK must not be loaded'))
+    monkeypatch.setattr(SharpaSdkHand, '_load_sdk', sdk)
+    monkeypatch.setattr(validation_driver, 'ensure_clear_graph', Mock())
+    hands = []
+    def create(configuration, **kwargs):
+        assert kwargs['use_fake_hardware'] is True
+        hand = MockSharpaHand(configuration)
+        hand.send_action = Mock(wraps=hand.send_action)
+        hands.append(hand)
+        return hand
+    monkeypatch.setattr(original, 'create_hand', create)
+    def exercise(node):
+        runtime = node.full
+        def observe():
+            for side in ('left', 'right'):
+                key = PoseArray();key.header.stamp = node.get_clock().now().to_msg()
+                key.poses = [Pose() for _ in range(25)]
+                runtime.keypoint(side, key)
+                msg = JointState();msg.header = key.header
+                msg.name = list(JOINT_NAMES);msg.position = [0.0]*22
+                runtime.manus(side, msg)
+        for _ in range(30):observe()
+        assert node.latch.phase == 'READY', node.latch.reason
+        sequence = 0
+        def heartbeat():
+            nonlocal sequence
+            sequence += 1
+            runtime.dispatch(dict(command='heartbeat', sequence=sequence, monotonic_ns=time.monotonic_ns()))
+        heartbeat()
+        # Starting from a nonzero measured pose must use the same original SDK
+        # send_action path as teleop; publishing telemetry alone cannot pass.
+        if active_other:
+            runtime.dispatch(dict(command='engage_hand', arguments=dict(side='right')))
+            heartbeat();observe()
+        for hand in hands:
+            if hand.config.side.value == 'left' or selection == 'both' or not active_other:
+                hand._position = tuple(START)
+        result = runtime.dispatch(dict(command='open_hand', arguments=dict(side=selection)))
+        selected = ('left','right') if selection == 'both' else ('left',)
+        assert all(result['hands'][s]['state'] == 'OPENING' and not result['hands'][s]['permit'] for s in selected)
+        with pytest.raises(ValueError, match='finish'):
+            runtime.dispatch(dict(command='engage_hand', arguments=dict(side='left')))
+        end = time.monotonic() + 4
+        while runtime.opening.operations and time.monotonic() < end:
+            heartbeat();observe();runtime.tick();time.sleep(.02)
+        assert not runtime.opening.operations
+        assert node.latch.phase != 'FAULT', node.latch.reason
+        assert not node.latch.requested['left']
+        assert node.latch.requested['right'] is active_other
+        for hand in hands:
+            if hand.config.side.value in selected:
+                assert hand.send_action.call_count > 20
+                np.testing.assert_array_equal(hand.read_joint_state().position, np.zeros(22))
+            elif active_other:
+                assert hand.send_action.call_count > 20
+                np.testing.assert_array_equal(hand.read_joint_state().position, np.zeros(22))
+            else:
+                hand.send_action.assert_not_called()
+                np.testing.assert_array_equal(hand.read_joint_state().position, START)
+        sent = node.validation_send_count
+        left_sent = hands[0].send_action.call_count
+        # Continued glove traffic after completion must not re-enable or send.
+        for _ in range(3):heartbeat();observe();runtime.tick()
+        assert hands[0].send_action.call_count == left_sent
+        if not active_other:assert node.validation_send_count == sent
+        heartbeat();runtime.dispatch(dict(command='engage_hand', arguments=dict(side='left')))
+        heartbeat();observe()
+        assert node.latch.requested['left'] and node.latch.requested['right'] is active_other
+        assert hands[0].send_action.call_count > left_sent
+    monkeypatch.setattr(rclpy, 'spin', exercise)
+    validation_driver.main(['--full-config', str(path), '--ros-args',
+        '-p', 'use_fake_hardware:=true', '-p', 'enable_left:=true', '-p', 'enable_right:=true',
+        '-p', 'left_serial:=fake-left', '-p', 'right_serial:=fake-right',
+        '-p', 'stop_on_command_timeout_s:=0.0'])
+    sdk.assert_not_called()

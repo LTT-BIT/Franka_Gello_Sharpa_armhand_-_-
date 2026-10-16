@@ -70,6 +70,7 @@ while (($#)); do
 done
 
 ENV_FILE="$REPO_ROOT/docker/.env"
+python3 "$REPO_ROOT/teleop_runtime/dds_buffers.py"
 [[ -f "$ENV_FILE" ]] || {
   echo "Missing deployment file: $ENV_FILE" >&2
   exit 2

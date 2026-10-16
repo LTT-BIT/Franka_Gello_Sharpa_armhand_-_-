@@ -38,6 +38,39 @@ def test_console_requests_are_one_shot():
     assert console.take_requests()["open_hands"] is False
 
 
+@pytest.mark.parametrize('succeeded',[True,False])
+def test_home_preserves_only_existing_permits_and_locks_pedal_until_success(succeeded):
+    console=OperatorConsole()
+    console.set_active('left',True,target='arm')
+    console.set_hold('left',True)  # Already held is still authorized.
+    console.set_active('right',True,target='hand')
+    console.begin_arm_home()
+    assert console.snapshot()['arm_authorized']=={'left':True,'right':False}
+    assert console.poll()=={'left':False,'right':False}
+    assert all(console.poll_holds().values())
+    assert console.poll_hands()=={'left':False,'right':True}
+    with pytest.raises(ValueError,match='locked'):console.set_hold('left',False)
+    with pytest.raises(ValueError,match='locked'):console.set_active('right',True,target='arm')
+    console.finish_arm_home(succeeded)
+    assert all(console.poll_holds().values()) and not any(console.poll().values())
+    if succeeded:
+        console.set_hold('left',False);console.set_hold('right',False)
+        assert console.poll()=={'left':True,'right':False}
+    else:
+        with pytest.raises(ValueError,match='locked'):console.set_hold('left',False)
+
+
+def test_disengage_during_home_never_restores_permits_or_hold():
+    console=OperatorConsole()
+    console.set_active('left',True)
+    console.begin_arm_home();console.disable_all('operator STOP')
+    console.finish_arm_home(True)
+    assert not any(console.snapshot()['arm_authorized'].values())
+    assert not any(console.poll_holds().values())
+    console.set_hold('left',False)
+    assert not any(console.poll().values())
+
+
 def make_server():
     console = OperatorConsole()
     server = OperatorControlServer(("127.0.0.1", 0), console)
@@ -189,3 +222,34 @@ def test_only_the_last_frontend_disconnect_disengages():
         first.close()
         second.close()
         server.close()
+
+
+def test_episode_home_deduplicates_and_disconnect_result_cannot_be_overwritten():
+    console = OperatorConsole()
+    job = dict(id='episode-1:0', task='assembly')
+    assert console.queue_episode_home(job)['state'] == 'queued'
+    assert console.take_requests()['episode_home']['id'] == job['id']
+    console.queue_episode_home(job)
+    assert not console.take_requests()['episode_home']
+    console.update_episode_home(job['id'], 'running')
+    with pytest.raises(ValueError, match='in progress'):
+        console.queue_episode_home(dict(id='other', task='assembly'))
+    console.disable_all('operator frontend disconnected')
+    console.update_episode_home(job['id'], 'done', 'late completion')
+    assert console.snapshot()['episode_home']['state'] == 'failed'
+    console.queue_episode_home(dict(id='episode-1:1', task='assembly'))
+    assert console.take_requests()['episode_home']['id'] == 'episode-1:1'
+
+
+def test_background_home_connection_cannot_replace_operator_frontend():
+    console = OperatorConsole()
+    server = OperatorControlServer(('127.0.0.1', 0), console)
+    try:
+        server.client_connected()  # background coordinator alone
+        with pytest.raises(ValueError, match='GUI'):
+            server.dispatch('episode_home', dict(id='episode-1:0', task='assembly'))
+        assert not console.snapshot()['episode_home']
+        server.client_connected()  # persistent operator frontend
+        assert server.dispatch('episode_home', dict(id='episode-1:0', task='assembly'))['state'] == 'queued'
+    finally:
+        server.server_close()

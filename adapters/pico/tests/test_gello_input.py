@@ -22,6 +22,73 @@ from pico_bimanual_franka_teleop.types import JointTeleopSample
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.mark.parametrize('extra_fault',[None,'left joint limit violation','dual-arm state is stale','unowned_busy'])
+def test_home_loop_yields_bus_then_holds_measured_home_until_next_pedal(monkeypatch,extra_fault):
+    import threading
+    from pico_bimanual_franka_teleop.control_server import OperatorConsole
+    console=OperatorConsole()
+    for side in ('left','right'):console.set_active(side,True,target='arm')
+    initial=(hardware.LOWER_LIMITS+hardware.UPPER_LIMITS)/2
+    home=initial+.03
+    finish=threading.Event();sent=[]
+    class Source:
+        output_kind='joint'
+        def sample(self):
+            return JointTeleopSample({'left':np.zeros(7),'right':np.zeros(7)},console.poll(),time.monotonic())
+        def close(self):pass
+    class Robot:
+        def __init__(self,**kwargs):self.cycles=0
+        def wait_for_state(self,timeout):return initial.copy()
+        def receive_state(self):
+            self.cycles+=1
+            if self.cycles==2:
+                assert not sent and console.home_locked
+                assert all(console.snapshot()['arm_authorized'].values())
+                finish.set();teleop.reset_thread.join(1)
+            return (home if self.cycles>=2 else initial).copy()
+        def take_gateway_faults(self):
+            # Includes a queued response on the exact worker-completion tick.
+            faults=('reset is active',) if self.cycles in (2,3) else ()
+            if self.cycles==2 and extra_fault not in (None,'unowned_busy'):
+                faults+=(extra_fault,)
+            if self.cycles==4 and extra_fault=='unowned_busy':faults+=('reset is active',)
+            return faults
+        def send_command(self,q,sides):
+            sent.append((np.asarray(q).copy(),tuple(sides)))
+            if len(sent)==1:
+                assert not console.home_locked
+                assert not any(console.poll().values())
+                expected={'left':extra_fault in (None,'unowned_busy'),'right':extra_fault!='dual-arm state is stale'}
+                assert console.snapshot()['arm_authorized']==expected
+                assert console.poll_holds()==expected
+                np.testing.assert_allclose(q,home)
+                console.set_hold('right' if extra_fault=='left joint limit violation' else 'left',False)
+            else:
+                expected={'left':extra_fault is None,'right':extra_fault=='left joint limit violation'}
+                assert console.poll()==expected
+                np.testing.assert_allclose(q,home)  # Fresh mapper anchor, no jump.
+                raise KeyboardInterrupt
+        def close(self):pass
+    class IK:
+        def __init__(self,**kwargs):
+            self.configuration=types.SimpleNamespace(q=initial.copy());self.last_diagnostics={}
+        def set_posture_reference(self,q):pass
+    monkeypatch.setattr(hardware,'UdpRobotBackend',Robot)
+    monkeypatch.setattr(hardware,'BimanualPinkIK',IK)
+    teleop=hardware.DualFr3HardwareTeleop(command_host='unused',command_port=1,state_host='unused',state_port=2,
+        state_timeout=.1,translation_scale=1.,rotation_scale=1.,control_rate=100.,max_joint_speed=.5,
+        robot_state_wait_timeout=.1,arm_source=Source(),operator=console,
+        reset_invoker=lambda side,task:(finish.wait(2),'settled'))
+    console.request('reset','assembly')
+    try:
+        with pytest.raises(KeyboardInterrupt):teleop.run()
+    finally:
+        finish.set()
+        if teleop.reset_thread is not None:teleop.reset_thread.join(1)
+    expected_sides=() if extra_fault=='dual-arm state is stale' else ('right',) if extra_fault=='left joint limit violation' else ('left','right')
+    assert [sides for _,sides in sent]==[expected_sides,() if extra_fault=='unowned_busy' else expected_sides]
+
+
 def test_checked_in_config_preserves_verified_identities_and_directions():
     config = load_gello_config(REPO_ROOT / "config" / "modes" / "gello.yaml")
 

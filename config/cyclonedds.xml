@@ -10,5 +10,12 @@
       <ParticipantIndex>auto</ParticipantIndex>
       <MaxAutoParticipantIndex>32</MaxAutoParticipantIndex>
     </Discovery>
+    <!-- Camera images exceed the stock Linux UDP receive buffer. Reliable
+         fragment retransmits otherwise create large receive-time gaps.
+         Install ops/setup/install_dds_buffers.sh on each workstation first.
+         Fail explicitly rather than silently accepting an undersized buffer. -->
+    <Internal>
+      <SocketReceiveBufferSize min="8MiB" max="8MiB"/>
+    </Internal>
   </Domain>
 </CycloneDDS>

@@ -151,6 +151,40 @@ def test_home_arm_does_not_also_open_the_hand():
     assert opened == []
 
 
+@pytest.mark.parametrize('succeeded',[True,False])
+def test_both_home_retains_arm_permits_and_waits_for_reset_confirmation(succeeded):
+    import threading
+    from pico_bimanual_franka_teleop.control_server import OperatorConsole
+    console=OperatorConsole()
+    for side in ('left','right'):console.set_active(side,True)
+    finish=threading.Event()
+    teleop=object.__new__(DualFr3HardwareTeleop)
+    teleop.operator=console;teleop.reset_thread=None;teleop.reset_outcome=[]
+    teleop.mappers={side:type('Mapper',(),{'reset':lambda self:None})() for side in ('left','right')}
+    teleop._notify=lambda message:None
+    teleop.reset_invoker=lambda side,task:(finish.wait(2) and succeeded,'measured settle result')
+    try:
+        teleop._start_reset(task='assembly')
+        assert console.home_locked and all(console.snapshot()['arm_authorized'].values())
+        assert all(console.poll_hands().values())
+        teleop._service_reset()
+        assert console.home_locked
+        with pytest.raises(ValueError,match='locked'):console.set_hold('left',False)
+        finish.set();teleop.reset_thread.join(1)
+        assert console.home_locked  # Worker completion alone cannot unlock.
+        teleop._service_reset()
+        assert console.home_locked is not succeeded
+        assert all(console.snapshot()['arm_authorized'].values())
+        assert all(console.poll_holds().values()) and not any(console.poll().values())
+        assert teleop.hold_q is None
+        if succeeded:
+            console.set_hold('left',False)
+            assert console.poll()=={'left':True,'right':False}
+    finally:
+        finish.set()
+        if teleop.reset_thread is not None:teleop.reset_thread.join(1)
+
+
 def test_home_moves_only_arm_and_never_requests_a_hand_pose():
     order = []
     teleop = object.__new__(DualFr3HardwareTeleop)
@@ -640,3 +674,42 @@ def test_uncommanded_side_never_moves():
     for _ in range(200):
         q = ik.step(q, left_only)
     np.testing.assert_array_equal(q[7:], right_before)
+
+
+@pytest.mark.parametrize('succeeded', [True, False])
+def test_episode_home_reports_only_measured_worker_completion(succeeded):
+    import threading
+    from pico_bimanual_franka_teleop.control_server import OperatorConsole
+    console = OperatorConsole()
+    finish = threading.Event()
+    teleop = object.__new__(DualFr3HardwareTeleop)
+    teleop.operator = console
+    teleop.reset_thread = None
+    teleop.reset_outcome = []
+    teleop.mappers = {}
+    teleop._notify = lambda message: None
+    invoked = []
+    def reset(side, task):
+        invoked.append((side, task))
+        finish.wait(2)
+        return succeeded, 'measured settle result'
+    teleop.reset_invoker = reset
+    job = console.queue_episode_home(dict(id='episode-1:0', task='assembly'))
+    try:
+        teleop._start_episode_home(job)
+        assert console.snapshot()['episode_home']['state'] == 'running'
+        teleop._service_reset()
+        assert console.snapshot()['episode_home']['state'] == 'running'
+        finish.set()
+        teleop.reset_thread.join(1)
+        assert console.snapshot()['episode_home']['state'] == 'running'
+        teleop._service_reset()
+        assert console.snapshot()['episode_home']['state'] == ('done' if succeeded else 'failed')
+        assert invoked == [(None, 'assembly')]
+        # Same queued job can never trigger another reset.
+        teleop._start_episode_home(job)
+        assert teleop.reset_thread is None
+    finally:
+        finish.set()
+        if teleop.reset_thread is not None:
+            teleop.reset_thread.join(1)

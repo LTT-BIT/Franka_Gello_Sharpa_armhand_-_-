@@ -153,6 +153,7 @@ class DualFr3HardwareTeleop:
         self.reset_invoker = reset_invoker
         self.reset_thread: threading.Thread | None = None
         self.reset_outcome: list[tuple[bool, str]] = []
+        self.reset_preserves_arm_permits = False
         self.capture_home_invoker = capture_home_invoker
         self.ready_invoker = ready_invoker
         self.ready_to_home_invoker = ready_to_home_invoker
@@ -176,10 +177,9 @@ class DualFr3HardwareTeleop:
     def _start_reset(
         self, side: str | None = None, task: str = DEFAULT_OPERATOR_TASK
     ) -> None:
-        """Home both arms, or only `side`. Either way the whole session
-        disengages for the duration: the reset trajectory owns the command
-        bus (the gateway blocks while it is active), so the other arm simply
-        holds where it is."""
+        """Both-arm Home retains permits behind a locked Hold. Single-arm
+        reset keeps its existing disengagement behavior. The reset trajectory
+        exclusively owns the command bus until its measured settling check."""
         if self.reset_invoker is None:
             self._notify("reset requested, but no reset command is configured")
             return
@@ -191,7 +191,11 @@ class DualFr3HardwareTeleop:
         ):
             self._notify("Home reset/capture is already in progress")
             return
-        self.operator.disable_all("resetting to initial pose")
+        self.reset_preserves_arm_permits = side is None
+        if self.reset_preserves_arm_permits:
+            self.operator.begin_arm_home()
+        else:
+            self.operator.disable_all("resetting to initial pose")
         for mapper in self.mappers.values():
             mapper.reset()
         scope = f"{side} arm" if side else "arms"
@@ -206,6 +210,22 @@ class DualFr3HardwareTeleop:
 
         self.reset_thread = threading.Thread(target=worker, daemon=True)
         self.reset_thread.start()
+
+
+    def _start_episode_home(self, job: dict) -> None:
+        # Reuse the existing gateway/reset path and measured settling checks.
+        current = self.operator.snapshot().get("episode_home", {})
+        if current.get("id") != job["id"] or current.get("state") != "queued":
+            return
+        if (self.reset_invoker is None or self.reset_thread is not None
+                or getattr(self, "capture_thread", None) is not None
+                or getattr(self, "preset_thread", None) is not None
+                or getattr(self, "active_preset", None) is not None):
+            self.operator.update_episode_home(job["id"], "failed", "Home 不可用或另一动作正在执行，请按 B 重试")
+            return
+        self._episode_home_id = job["id"]
+        self.operator.update_episode_home(job["id"], "running", "机械臂正在 Home")
+        self._start_reset(task=job["task"])
 
     def _open_hands(self, sides: tuple[str, ...]) -> None:
         """Stop selected sides following, then stream their open pose."""
@@ -464,10 +484,18 @@ class DualFr3HardwareTeleop:
             self.reset_outcome.pop() if self.reset_outcome else (False, "no result")
         )
         self._notify(f"reset {'done' if succeeded else 'FAILED'}: {message}")
+        if getattr(self, "reset_preserves_arm_permits", False):
+            self.operator.finish_arm_home(succeeded)
+        job_id = getattr(self, "_episode_home_id", None)
+        if job_id is not None:
+            self.operator.update_episode_home(job_id, "done" if succeeded else "failed", message)
+            self._episode_home_id = None
+        self.reset_preserves_arm_permits = False
         # The arms are wherever the reset left them, so the pre-reset hold_q is
         # a lie. Dropping it makes the loop re-seed from measured state and
         # re-anchor the IK posture reference before anything can re-engage.
         self.hold_q = None
+
 
     @staticmethod
     def _ik_status(worst: dict) -> str:
@@ -529,6 +557,12 @@ class DualFr3HardwareTeleop:
                 if timing is not None:
                     timing.begin_cycle()
                 started_at = time.monotonic()
+                # A queued rejection may arrive on the very tick which folds
+                # the completed Home worker back into the loop.
+                home_owned_bus = (
+                    self.reset_thread is not None
+                    and self.reset_preserves_arm_permits
+                )
                 self._service_reset()
                 self._service_capture_home()
                 if timing is not None:
@@ -581,6 +615,10 @@ class DualFr3HardwareTeleop:
                     # started from, normally the captured hardware home.
                     self.ik.set_posture_reference(self.hold_q)
                 for fault in self.robot.take_gateway_faults():
+                    if home_owned_bus and fault == "reset is active":
+                        # Expected ownership rejection of a packet already in
+                        # flight at handoff, not a new motion safety failure.
+                        continue
                     rejected = tuple(
                         side for side in SIDES if fault.startswith(f"{side} ")
                     )
@@ -614,7 +652,9 @@ class DualFr3HardwareTeleop:
                 }
                 if open_sides:
                     self._open_hands(tuple(open_sides))
-                if requests.get("reset"):
+                if requests.get("episode_home"):
+                    self._start_episode_home(requests["episode_home"])
+                elif requests.get("reset"):
                     self._start_reset(task=str(requests["reset"]))
                 elif requests.get("reset_left"):
                     self._start_reset("left", str(requests["reset_left"]))
@@ -649,7 +689,8 @@ class DualFr3HardwareTeleop:
                 if self.reset_thread is not None:
                     # The reset trajectory owns the arms; nothing may engage,
                     # and this tick's sample must not act on stale activations.
-                    self.operator.disable_all("reset in progress")
+                    if not self.reset_preserves_arm_permits:
+                        self.operator.disable_all("reset in progress")
                     sample = None
                 if self.capture_thread is not None and self.capture_side is not None:
                     self.operator.set_active(
@@ -794,11 +835,14 @@ class DualFr3HardwareTeleop:
                                 "final pose did not settle",
                                 False,
                             )
+                # Locked Hold is visible to the operator, but must not contend
+                # with the Home trajectory's exclusive command ownership.
                 active_sides = tuple(side for side in SIDES if side in targets)
                 if timing is not None:
                     timing.mark("send_command")
-                self.robot.send_command(self.hold_q, active_sides)
-                if timing is not None:
+                if self.reset_thread is None:
+                    self.robot.send_command(self.hold_q, active_sides)
+                if timing is not None and self.reset_thread is None:
                     timing.command_sent(getattr(self.robot, "sequence", 0) - 1, active_sides)
                 if finish_preset_after_send is not None:
                     reason, resume = finish_preset_after_send

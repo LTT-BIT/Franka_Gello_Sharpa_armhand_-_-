@@ -5,6 +5,7 @@ import sys
 import socketserver
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +29,13 @@ class CollectorController:
         )
         self._quality: str | None = None
         self._monitor = getattr(node, "continuity_monitor", None)
+        self._readiness = getattr(node, "collection_readiness", None)
         self._auto_stop_reason: dict[str, Any] | None = None
         self._seen_alerts: set[int] = set()
         self._worker: threading.Thread | None = None
+        self._after_home: dict[str, Any] = {}
+        self._home_io_lock = threading.Lock()
+        recorder.on_recording_stopped = self._writer_stopped
 
     def set_ready(self) -> None:
         with self._state_lock:
@@ -46,6 +51,7 @@ class CollectorController:
             last_state = dict(self._last_state)
             quality = self._quality
             auto_stop_reason = self._auto_stop_reason
+            after_home = dict(self._after_home)
         active = bool(self._recorder.active)
         current = self._recorder.current_bag_dir
         last_bag = self._recorder.last_bag_dir
@@ -56,9 +62,15 @@ class CollectorController:
         )
         health = self._monitor.snapshot() if self._monitor is not None else {}
         busy = phase in {"STOPPING", "VALIDATING"}
+        readiness = self._readiness.snapshot(time.monotonic()) if self._readiness is not None else {"ready": True}
+        ready = ready and readiness["ready"]
+        if phase == "READY" and not ready:
+            phase = "WAITING"
         return {
+            "after_home": after_home,
             "state": phase if busy else "RECORDING" if active else phase,
             "continuity_enabled": self._monitor is not None,
+            "start_readiness": readiness,
             "continuity_health": health,
             "alerts": health.get("alerts", []),
             "auto_stop_reason": auto_stop_reason,
@@ -77,16 +89,19 @@ class CollectorController:
             "failures": list(last_state.get("failures") or []),
             "boundary_warnings": list(last_state.get("boundary_warnings") or []),
             "transport_warnings": list(last_state.get("transport_warnings") or []),
-            "can_start": ready and not active and not busy and not (auto_stop_reason and quality is None),
+            "can_start": ready and not active and not busy and not (auto_stop_reason and quality is None)
+            and (not after_home or (after_home["state"] == "done" and quality is not None)),
             "can_stop": active and not busy,
             "can_mark_milestone": active and phase == "RECORDING",
             "milestones": self._recorder.milestones,
             "can_discard": not active and last_bag is not None and not busy,
         }
 
-    def start(self) -> dict[str, Any]:
+    def start(self, return_arm_home: dict | None = None) -> dict[str, Any]:
         with self._operation_lock:
             with self._state_lock:
+                if self._after_home and (self._after_home["state"] != "done" or self._quality is None):
+                    raise RuntimeError("请等待机械臂 Home 完成并保存本段质量分类；Home 失败可按 B 重试")
                 if not self._ready:
                     raise RuntimeError("collector is still waiting for required topics")
                 if self._phase in {"STOPPING", "VALIDATING"}:
@@ -95,6 +110,15 @@ class CollectorController:
                 raise RuntimeError("请先保存上一段的报错或放弃分类")
             if self._recorder.active:
                 raise RuntimeError("an episode is already recording")
+            if self._readiness is not None:
+                readiness = self._readiness.snapshot(time.monotonic())
+                if not readiness["ready"]:
+                    raise RuntimeError(readiness["message"])
+            if return_arm_home is not None:
+                if not isinstance(return_arm_home, dict) or return_arm_home.get("task") not in {
+                    "powder_weighing", "assembly", "bean_picking"
+                }:
+                    raise ValueError("invalid arm Home task")
             bag_dir = self._recorder.start()
             if self._monitor is not None:
                 self._monitor.begin(bag_dir.name, time.monotonic())
@@ -105,6 +129,9 @@ class CollectorController:
                 self._started_at = time.monotonic()
                 self._last_state = {}
                 self._quality = None
+                self._after_home = ({"id": uuid.uuid4().hex, "episode": bag_dir.name,
+                    "task": return_arm_home["task"], "owner": str(return_arm_home.get("owner", ""))[:16], "attempt": 0, "state": "armed", "message": "等待停止写盘"}
+                    if return_arm_home is not None else {})
             self._node.get_logger().info(
                 f"RECORDING: {bag_dir} (UI Stop or L will stop and validate)"
             )
@@ -194,8 +221,10 @@ class CollectorController:
                     self._auto_stop_reason = reason
                     return_status = False
         if not return_status:
-            episode = self._monitor.episode
-            self._monitor.end()
+            current = self._recorder.current_bag_dir
+            episode = current.name if current is not None else None
+            if self._monitor is not None:
+                self._monitor.end()
 
             def finalize():
                 try:
@@ -235,7 +264,57 @@ class CollectorController:
             finally:
                 with self._state_lock:
                     self._phase = final_phase
+        self._persist_home()
         return self.status()
+
+    def _writer_stopped(self) -> None:
+        # Called only after rosbag has exited, before expensive bag validation.
+        with self._state_lock:
+            self._phase = "VALIDATING"
+            if self._after_home and self._after_home["state"] == "armed":
+                self._after_home.update(state="pending", message="等待机械臂 Home")
+
+    def report_home(self, arguments: dict) -> dict[str, Any]:
+        with self._state_lock:
+            home = self._after_home
+            if not home or arguments.get("id") != home["id"] or arguments.get("attempt") != home["attempt"]:
+                raise ValueError("stale episode Home result")
+            state = arguments.get("state")
+            if state not in {"running", "done", "failed"}:
+                raise ValueError("invalid Home result")
+            if home["state"] in {"pending", "running"}:
+                home.update(state=state, message=str(arguments.get("message", ""))[:500])
+        self._persist_home()
+        return self.status()
+
+    def retry_home(self, arguments: dict) -> dict[str, Any]:
+        with self._state_lock:
+            home = self._after_home
+            if not home or arguments.get("id") != home["id"]:
+                raise ValueError("stale episode Home retry")
+            owner = str(arguments.get("owner", home.get("owner", "")))[:16]
+            if home["state"] == "failed" or (home["state"] in {"pending", "running"} and owner != home.get("owner", "")):
+                home.update(state="pending", attempt=home["attempt"] + 1, owner=owner, message="操作员请求重试 Home")
+        self._persist_home()
+        return self.status()
+
+    def _persist_home(self) -> None:
+        # Validation owns the recorder's state file until _last_state is set.
+        # Serialize later quality/Home updates without taking the finalization lock.
+        with self._home_io_lock:
+            with self._state_lock:
+                home = dict(self._after_home)
+                quality = self._quality
+                complete = bool(self._last_state)
+            bag = self._recorder.last_bag_dir
+            if not home or not complete or bag is None or bag.name != home["episode"]:
+                return
+            path = bag / "collection_state.json"
+            state = json.loads(path.read_text(encoding="utf-8"))
+            state.update(after_home=home, quality=quality)
+            temporary = path.with_suffix(".home.tmp")
+            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
 
     def discard(self) -> dict[str, Any]:
         with self._operation_lock:
@@ -243,8 +322,9 @@ class CollectorController:
                 self._stop_locked(interrupted=False)
             if self._recorder.last_bag_dir is None:
                 raise RuntimeError("there is no episode to discard")
-            bag_dir = self._recorder.mark_discarded()
-            state = _read_collection_state(bag_dir)
+            with self._home_io_lock:
+                bag_dir = self._recorder.mark_discarded()
+                state = _read_collection_state(bag_dir)
             with self._state_lock:
                 self._last_state = state
                 self._phase = "DISCARDED"
@@ -261,6 +341,7 @@ class CollectorController:
         path = save_quality(self._quality_dir, episode, quality)
         with self._state_lock:
             self._quality = quality
+        self._persist_home()
         self._node.get_logger().info(f"数据质量已保存：{episode} → {quality} ({path})")
 
     def rate_quality(self, episode: str, quality: str) -> dict[str, Any]:
@@ -277,9 +358,11 @@ class CollectorController:
             if self._phase == "DISCARDED" and quality != "放弃":
                 raise ValueError("该数据已弃用，不能通过质量评价恢复")
             if quality == "放弃":
-                self._recorder.mark_discarded()
+                with self._home_io_lock:
+                    self._recorder.mark_discarded()
+                    state = _read_collection_state(bag_dir)
                 with self._state_lock:
-                    self._last_state = _read_collection_state(bag_dir)
+                    self._last_state = state
                     self._phase = "DISCARDED"
             self._save_quality_locked(episode, quality)
             return self.status()
@@ -288,12 +371,16 @@ class CollectorController:
         if command == "rate_quality":
             arguments = arguments or {}
             return self.rate_quality(str(arguments.get("episode") or ""), str(arguments.get("quality") or ""))
+        if command == "report_home":
+            return self.report_home(arguments or {})
+        if command == "retry_home":
+            return self.retry_home(arguments or {})
         if command == "status":
             return self.status()
         if command == "start":
-            return self.start()
+            return self.start((arguments or {}).get("return_arm_home"))
         if command == "stop":
-            return self.request_stop() if self._monitor is not None else self.stop()
+            return self.request_stop() if self._monitor is not None or self._after_home else self.stop()
         if command == "discard":
             return self.discard()
         if command == "mark_milestone":

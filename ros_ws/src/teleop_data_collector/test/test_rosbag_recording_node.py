@@ -576,3 +576,143 @@ def test_diagnostic_logging_failure_cannot_prevent_scheduling_stop(tmp_path, mon
     controller._worker.join(3)
     assert not recorder.active
     assert len(signals) == 1
+
+
+def test_start_gate_rechecks_camera_after_discovery_before_allocating_episode(tmp_path, monkeypatch):
+    from teleop_data_collector.camera_stream_health import CameraReadiness
+    gate = CameraReadiness(['/cam0/color/image_raw'])
+    now = [0.0]
+    monkeypatch.setattr('teleop_data_collector.collector_control.time.monotonic', lambda: now[0])
+    node = _Node([])
+    node.collection_readiness = gate
+    recorder = _Recorder(tmp_path)
+    controller = CollectorController(node, recorder, quality_dir=tmp_path / 'quality')
+    controller.set_ready()
+    assert controller.status()['state'] == 'WAITING'
+    assert not controller.status()['can_start']
+    with pytest.raises(RuntimeError, match='等待相机'):
+        controller.start()
+    assert recorder.current_bag_dir is None
+    for i in range(102):
+        gate.observe('/cam0/color/image_raw', 1_000_000_000 + i * 50_000_000, i * .05)
+    now[0] = 5.05
+    assert controller.status()['can_start']
+    # Camera disconnects after the GUI's latest status: reject stale Start too.
+    now[0] = 5.3
+    with pytest.raises(RuntimeError, match='等待相机'):
+        controller.start()
+    assert recorder.current_bag_dir is None
+    for i in range(102):
+        gate.observe('/cam0/color/image_raw', 10_000_000_000 + i * 50_000_000, 10 + i * .05)
+    now[0] = 15.05
+    assert controller.start()['state'] == 'RECORDING'
+    # Losing readiness during recording does not disable the Stop button or
+    # mutate the episode. The existing continuity watchdog owns auto-stop.
+    now[0] = 16.5
+    assert controller.status()['state'] == 'RECORDING'
+    assert controller.status()['can_stop']
+
+
+@pytest.mark.parametrize('home_first', [True, False])
+def test_next_episode_requires_both_quality_and_confirmed_home(tmp_path, monkeypatch, home_first):
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    # First finish the helper's legacy episode, then enable the new policy.
+    controller.stop()
+    controller.start({'task': 'assembly'})
+    controller.stop()
+    status = controller.status()
+    home = status['after_home']
+    assert home['state'] == 'pending'
+    assert not status['can_start']
+    episode = status['last_episode']
+    result = dict(id=home['id'], attempt=home['attempt'], state='done', message='settled')
+    first = lambda: controller.report_home(result)
+    second = lambda: controller.rate_quality(episode, '一般')
+    if not home_first:
+        first, second = second, first
+    first()
+    assert not controller.status()['can_start']
+    with pytest.raises(RuntimeError, match='Home'):
+        controller.start()
+    second()
+    assert controller.status()['can_start']
+    state = json.loads((recorder.last_bag_dir / 'collection_state.json').read_text())
+    assert state['after_home']['state'] == 'done'
+    assert state['quality'] == '一般'
+    controller.start({'task': 'assembly'})
+    assert controller.status()['after_home']['id'] != home['id']
+    controller.stop()
+
+
+def test_home_runs_during_validation_but_not_while_writer_is_alive(tmp_path, monkeypatch):
+    import threading
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    controller.start({'task': 'assembly'})
+    entered, release = threading.Event(), threading.Event()
+    def validate(path):
+        assert not recorder.active
+        entered.set()
+        assert release.wait(3)
+        return (), {}
+    recorder._postflight = validate
+    assert controller.status()['after_home']['state'] == 'armed'
+    controller.request_stop()
+    try:
+        assert entered.wait(2)
+        status = controller.status()
+        assert status['state'] == 'VALIDATING'
+        assert not status['can_start']
+        home = status['after_home']
+        assert home['state'] == 'pending'
+        controller.report_home(dict(id=home['id'], attempt=0, state='done'))
+        assert not controller.status()['can_start']
+    finally:
+        release.set()
+        controller._worker.join(3)
+    assert controller.status()['quality_pending']
+    assert not controller.status()['can_start']
+
+
+def test_auto_error_classification_still_waits_for_home_and_retry(tmp_path, monkeypatch):
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    controller.start({'task': 'assembly'})
+    _severe_gap(monitor)
+    controller.check_continuity()
+    controller._worker.join(3)
+    status = controller.status()
+    assert status['quality'] == '报错'
+    assert status['quality_pending'] is False
+    assert not status['can_start']
+    home = status['after_home']
+    controller.report_home(dict(id=home['id'], attempt=0, state='failed', message='settling failed'))
+    assert not controller.status()['can_start']
+    controller.retry_home(dict(id=home['id']))
+    with pytest.raises(ValueError, match='stale'):
+        controller.report_home(dict(id=home['id'], attempt=0, state='done'))
+    controller.report_home(dict(id=home['id'], attempt=1, state='done'))
+    assert controller.status()['can_start']
+    assert controller.status()['state'] == 'INCOMPLETE'
+    assert not controller.status()['finalized']
+
+
+def test_saved_home_cannot_bypass_quality_save_failure(tmp_path, monkeypatch):
+    from teleop_data_collector import collector_control
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    controller.start({'task': 'assembly'})
+    controller.stop()
+    home = controller.status()['after_home']
+    controller.report_home(dict(id=home['id'], attempt=0, state='done'))
+    save = collector_control.save_quality
+    def fail(*args):
+        raise OSError('classification disk unavailable')
+    monkeypatch.setattr(collector_control, 'save_quality', fail)
+    with pytest.raises(OSError):
+        controller.rate_quality(recorder.last_bag_dir.name, '一般')
+    assert not controller.status()['can_start']
+    assert controller.status()['quality_pending']
+    monkeypatch.setattr(collector_control, 'save_quality', save)
+    controller.rate_quality(recorder.last_bag_dir.name, '一般')
+    assert controller.status()['can_start']

@@ -122,6 +122,7 @@ The two PCsensor foot-pedal units are programmed with distinct keyboard keys:
 | Pedal | Key | Action |
 |---|---|---|
 | Arm pedal | `A` | Toggle left arm Hold |
+| Arm pedal (middle) | `B` | Same action as GUI `Home both arms`; hands are unaffected |
 | Arm pedal | `C` | Toggle right arm Hold |
 | Collection pedal | `L` | Start/stop the current episode |
 | Collection pedal | `Space` | Mark a milestone while recording |
@@ -129,6 +130,27 @@ The two PCsensor foot-pedal units are programmed with distinct keyboard keys:
 Pedal auto-repeat is disabled. The GUI window must have keyboard focus for these
 ordinary keyboard-emulating pedals. `DISENGAGE ALL` remains the common software
 stop for every follower; hardware emergency stopping remains separate.
+
+`B` and `Home both arms` use the currently selected task's saved Home, including
+positions manually updated with Record Home. Existing arm permits are retained
+behind a forced Hold during reset. Both Hold controls are locked in the backend
+until the reset service confirms measured arrival and settling. The teleop loop
+does not publish active arm commands while that service owns the trajectory.
+It sends no teleop command packets during reset, including empty inactive packets:
+the gateway rejects those too while reset is active. The specific `reset is active`
+response from a packet already in flight is treated as expected only while this
+backend owns both-arm Home (including its completion tick). Other gateway faults,
+and this same response outside the owned Home operation, still revoke permits.
+After success the arms remain held, with their Start authorization preserved;
+press `A`/`C` to release the corresponding Hold for the next teleoperation round.
+A previously unauthorized arm is not automatically authorized by Home.
+
+If reset fails, Hold release remains locked; correct the cause and retry Home.
+`DISENGAGE ALL`, frontend disconnection and other safety denials still revoke
+authorization, and completing Home never restores a revoked permit. Single-arm
+Home, Ready trajectories, and manual Home capture retain their existing behavior.
+To manually teach a new Home, explicitly stop the corresponding arm, drag it in
+the existing teaching mode, and use its Record Home button as before.
 
 ### Preset relative actions
 

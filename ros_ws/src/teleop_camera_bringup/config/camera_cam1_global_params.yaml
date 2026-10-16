@@ -1,4 +1,4 @@
-# cam1-only USB3/YUYV profile: avoid the reproduced MJPG timestamp anomaly.
+# cam1-only USB3/YUYV profile; host sync enabled for the timestamp A/B test.
 # Keep source capture timestamps; do not substitute host receive timestamps.
 # Based on the wrist RGB profile; cam2 retains camera_secondary_params.yaml.
 # common params
@@ -19,7 +19,7 @@ interleave_frame_enable: false
 interleave_skip_enable: false
 interleave_skip_index: 1
 time_domain: "global" # global, device, system
-enable_sync_host_time: false
+enable_sync_host_time: true
 enable_frame_timestamp_csv: true
 
 trigger_out_enabled: false

@@ -20,9 +20,13 @@ class FullHandRuntime:
         from sensor_msgs.msg import JointState
         from geometry_msgs.msg import PoseArray
         self.node=node;self.config=config;self.latch=node.latch
+        from .open_hand import SharpaOpenController
+        self.opening=SharpaOpenController(self)
         from .normal_continuity import full_continuity_gate
         self.raw=self.make_raw_gate(config)
-        if getattr(self,'normal_path',False):
+        if getattr(self,'standalone_manus',False):
+            node.get_logger().info('Normal MANUS: original sender and joint limits, GUI-owned permits')
+        elif getattr(self,'normal_path',False):
             node.get_logger().info('Normal LitchiBot: final-command integrity/freshness only; native limits unchanged')
         elif self.raw.threshold is None:
             node.get_logger().info('RawContinuityGate: minimum-interference pattern policy; single-frame cutoff disabled; 0.180000 rad is historical diagnostic reference only')
@@ -55,10 +59,11 @@ class FullHandRuntime:
             else:
                 # Full MANUS uses reliable source delivery and retains enough
                 # history for exact stamp validation despite callback ordering.
-                self.subscriptions.append(node.create_subscription(PoseArray,f'/manus/{side}/keypoints',
-                    lambda msg,s=side:self.keypoint(s,msg),100))
+                if not getattr(self,'standalone_manus',False):
+                    self.subscriptions.append(node.create_subscription(PoseArray,f'/manus/{side}/keypoints',
+                        lambda msg,s=side:self.keypoint(s,msg),100))
                 self.subscriptions.append(node.create_subscription(JointState,f'/teleop/sharpa/{side}/target',
-                    lambda msg,s=side:self.manus(s,msg),1000))
+                    lambda msg,s=side:self.manus(s,msg),1 if getattr(self,'standalone_manus',False) else 1000))
         self.subscriptions.append(node.create_subscription(String,'/teleop/sharpa/source_fault',
             self.source_fault,10))
         self.services.append(node.create_service(Trigger,'/teleop/sharpa/disengage_all',self.all_service))
@@ -90,6 +95,10 @@ class FullHandRuntime:
         resp.success=True;resp.message='Both hand permits revoked';return resp
 
     def request(self,side,enabled):
+        opening=getattr(self,'opening',None)
+        if opening is not None and side in opening.operations:
+            if enabled:raise ValueError('Wait for Open hand to finish before Start hand')
+            opening.cancel(side)
         if enabled and self.config['source']=='manus' and self.config['mode'] in ('normal','fake') and self.latch.phase=='WARMUP':
             raise ValueError('Hand acquisition not ready; wait for both hands to become READY')
         if enabled and self.config['source']=='manus' and any(
@@ -98,6 +107,7 @@ class FullHandRuntime:
             raise ValueError('Hand acquisition not ready; source data is stale')
         if enabled and self.latch.phase!='FAULT' and self.latch.requested.get(side):return
         self.latch.request_hand(side,enabled,time.monotonic());self.gate.clear(side)
+        if enabled and opening is not None:opening.results.pop(side,None)
         if not enabled:self.stop_hardware_side(side)
 
     def stop_hardware_side(self,side):
@@ -114,10 +124,11 @@ class FullHandRuntime:
             'normal_forwarding':self.config['source']=='manus' and self.config['mode'] in ('normal','fake'),
             # Published by tick after the constructor's SDK stop calls finish.
             'source_ready':True,
-            'hands':{s:{'state':self.latch.side_state(s,now),'permit':self.latch.requested[s],
-                        'can_engage':self.latch.phase in ('READY','ARMED') and self.latch.samples[s]>=WARMUP_FRAMES
+            'hands':{s:{'state':'OPENING' if s in self.opening.operations else self.latch.side_state(s,now),'permit':self.latch.requested[s],
+                        'can_engage':s not in self.opening.operations and self.latch.phase in ('READY','ARMED') and self.latch.samples[s]>=WARMUP_FRAMES
                             and all(k in self.latch.last and now-self.latch.last[k][2]<=TIMEOUT_S for k in ('left','right')),
                         'samples':self.latch.samples[s],
+                        'open_status':self.opening.results.get(s,''),
                         'reason':self.latch.side_reasons[s] if self.severity_policy else self.latch.reason} for s in ('left','right')},
             'hardware_send':0 if self.config['mode']=='fake' else self.node.validation_send_count,
             'severity':('HARD_FAULT' if self.latch.phase=='FAULT' else 'SOFT_HOLD' if self.severity_policy and any(self.latch.holds.values()) else 'WARNING'),
@@ -157,12 +168,12 @@ class FullHandRuntime:
         elif command=='disengage_all':
             for side in ('left','right'):self.request(side,False)
         elif command=='open_hand':
-            raise ValueError('Open hand has no validated Sharpa policy; no command sent')
+            self.opening.start(args.get('side'))
         elif command!='status':raise ValueError('Unknown hand command')
         return self.status()
 
     def disconnected(self):
-        if any(self.latch.requested.values()):self.node.stop_validation('GUI control connection lost')
+        if any(self.latch.requested.values()) or self.opening.operations:self.node.stop_validation('GUI control connection lost')
 
     def tick(self):
         if self.config['source']=='manus' and self.latch.phase=='READY' and not any(self.latch.requested.values()) and any(
@@ -175,6 +186,7 @@ class FullHandRuntime:
         for side in ('left','right'):
             if self.pending[side] and time.monotonic()-self.pending[side][0][0]>TIMEOUT_S:
                 self.node.stop_validation('Matching Manus validity input unavailable')
+        self.opening.tick()
         if hasattr(self.raw,'distribution') and time.monotonic()-self.last_delta_at>=1:
             self.save_delta_stats();self.last_delta_at=time.monotonic()
         if time.monotonic()-self.last_state_at>.05:

@@ -71,7 +71,7 @@ PY_CONFIG
     echo "Waiting for four camera streams to deliver stable frames..."
     setsid python3 -m teleop_data_collector.camera_stream_health wait \
       --timeout-sec "$COLLECTION_CAMERA_READY_TIMEOUT_SEC" \
-      --stable-sec 5 \
+      --stable-sec 3 \
       --max-gap-ms 150 "${source_readiness_args[@]}" &
     readiness_pid=$!
 

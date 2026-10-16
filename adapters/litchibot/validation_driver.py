@@ -94,7 +94,8 @@ def main(argv=None):
     permit=config['policy'] if config else load_permit(args.permit)
     software=config is not None and config['mode']=='fake'
     normal=config is not None and config['source']=='litchibot' and config['mode'] in ('normal','fake')
-    if normal:validate_normal_arguments(ros_args,permit,software)
+    manus_normal=config is not None and config['source']=='manus' and config['mode'] in ('normal','fake')
+    if normal or manus_normal:validate_normal_arguments(ros_args,permit,software)
     else:validate_driver_arguments(ros_args,permit,software=software)
     sock_path,status_path=control_paths(permit)
     lock_path=sock_path.parent/'hardware.lock'
@@ -134,8 +135,8 @@ def main(argv=None):
         def __init__(self):
             latch_type=MotionLatch
             if config and config['source']=='manus' and config['mode'] in ('normal','fake'):
-                from adapters.litchibot.validation_safety import ManusNormalMotionLatch
-                latch_type=ManusNormalMotionLatch
+                from adapters.manus.normal_hand_runtime import ManusForwardingAuthority
+                latch_type=ManusForwardingAuthority
             if config and config['source']=='litchibot' and config['mode'] in ('normal','fake'):
                 from adapters.litchibot.normal_control import NormalHandAuthority
                 latch_type=NormalHandAuthority
@@ -165,16 +166,21 @@ def main(argv=None):
                             raise ValueError('SDK must report the physical device hand side explicitly')
                 if len(self._hands)!=2:
                     raise ValueError('Both explicitly bound hands required')
-                expected_timeout=0.0 if normal else TIMEOUT_S
+                expected_timeout=0.0 if normal or manus_normal else TIMEOUT_S
                 if float(self.get_parameter('stop_on_command_timeout_s').value)!=expected_timeout:
                     raise ValueError(f'Configured command timeout must be {expected_timeout:.2f} seconds')
-                self.get_logger().info(f'Sharpa stop_on_command_timeout_s = {expected_timeout:.2f}; normal_session={normal}')
+                self.get_logger().info(f'Sharpa stop_on_command_timeout_s = {expected_timeout:.2f}; normal_session={normal or manus_normal}')
                 self.declare_parameter('supervised_validation_guard',True)
                 self.declare_parameter('validation_session',permit['session_token'][:16])
                 if config:
                     for subscription in self._command_subscriptions:self.destroy_subscription(subscription)
                     self._command_subscriptions=[]
-                    if normal:
+                    if manus_normal:
+                        from adapters.manus.normal_hand_runtime import ManusHandRuntime
+                        self.full=ManusHandRuntime(self,config)
+                        for side,hand in self._hands.items():
+                            hand.stop();self.needs_enable.add(side.value)
+                    elif normal:
                         from adapters.litchibot.normal_runtime import NormalHandRuntime
                         self.full=NormalHandRuntime(self,config)
                     else:
@@ -230,6 +236,7 @@ def main(argv=None):
 
         def service_guard(self):
             if normal:return self.service_normal()
+            if manus_normal:return self.service_manus()
             if stop_requested:
                 self.stop_validation('Operator/process shutdown')
                 # Unwind the executor before shutting its context down. Calling
@@ -284,6 +291,40 @@ def main(argv=None):
             temporary=status_path.with_suffix('.tmp')
             temporary.write_text(json.dumps(payload));os.chmod(temporary,0o600);temporary.replace(status_path)
 
+        def service_manus(self):
+            if stop_requested:
+                self.stop_validation('Operator/process shutdown')
+                raise ExternalShutdownException()
+            try:
+                # Legacy datagrams are not an extra heartbeat lease in normal
+                # MANUS. The authenticated GUI connection owns its permits.
+                for _ in range(100):
+                    try:control.recv(4097)
+                    except BlockingIOError:break
+                self.full.tick()
+                if sum(n=='sharpa_driver' for n,ns in self.get_node_names_and_namespaces())>1:
+                    raise RuntimeError('Duplicate driver ownership')
+                for side,hand in self._hands.items():
+                    if not hand.is_connected:raise RuntimeError('Native device disconnected: '+side.value)
+                    sources=self.get_publishers_info_by_topic(f'/teleop/sharpa/{side.value}/target')
+                    if len(sources)>1 or any(p.node_name!='manus_sharpa_retarget' for p in sources):
+                        raise RuntimeError('Duplicate/unexpected MANUS target owner')
+                    for topic in (f'/sharpa/{side.value}/command',f'/sharpa/{side.value}/joint_states'):
+                        pubs=self.get_publishers_info_by_topic(topic)
+                        if len(pubs)>1 or any(p.node_name!='sharpa_driver' for p in pubs):
+                            raise RuntimeError('Duplicate/unexpected driver ownership')
+            except Exception as error:self.stop_validation(error)
+            now=time.monotonic()
+            if now-getattr(self,'_manus_status_at',0)>1:
+                payload={'phase':self.latch.phase,'reason':self.latch.reason,
+                         'hardware_command_calls':0 if software else self.validation_send_count,
+                         'unix_s':time.time(),'session':permit['session_token'][:16]}
+                temporary=status_path.with_suffix('.tmp')
+                try:
+                    temporary.write_text(json.dumps(payload));os.chmod(temporary,0o600);temporary.replace(status_path)
+                except OSError as error:self.full.warn('Hand status storage unavailable: '+str(error))
+                self._manus_status_at=now
+
         def service_normal(self):
             if stop_requested:
                 for s in self.latch.requested:self.full.request(s,False)
@@ -336,12 +377,22 @@ def main(argv=None):
         def forward_full(self,side,message):
             if not self.full or self.latch.side_state(side.value,time.monotonic())!='ACTIVE':
                 raise ValueError('No authoritative hand permit')
+            return self._forward_managed(side,message)
+
+        def forward_open(self,side,message):
+            if not self.full:raise ValueError('Managed session required')
+            self.full.opening.authorize(side.value,message)
+            return self._forward_managed(side,message,authorize=lambda:self.full.opening.authorize(side.value,message))
+
+
+        def _forward_managed(self,side,message,authorize=None):
             # Normal hands stay enabled for the session; only validation/Manus
             # use the existing re-enable path after their native watchdog stop.
             if not normal and side.value in self.needs_enable:
                 if software:self._hands[side]._stopped=False
                 else:self._hands[side]._ensure_enabled()
                 self.needs_enable.discard(side.value)
+            if authorize is not None:authorize()
             previous=self._last_command_at[side]
             super()._on_command(side,message)
             if self._last_command_at[side]<=previous:raise ValueError('Original sender rejected command')

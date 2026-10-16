@@ -91,3 +91,34 @@ def test_real_ros_node_loads_tactile_config_and_executor_closes(with_cameras):
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()
+
+
+def test_idle_image_callbacks_keep_start_gate_current_without_episode_statistics(monkeypatch):
+    camera = '/cam0/color/image_raw'
+    subscribed = {}
+    node = SimpleNamespace(config=SimpleNamespace(topics=[SimpleNamespace(
+        topic=camera, type_name='sensor_msgs/msg/Image', required=True)]),
+        rosbag_record_args=[], rosbag_record_default_qos={},
+        create_subscription=lambda cls, topic, callback, qos, **kw: subscribed.setdefault(topic, callback))
+    live = LiveContinuity(node)
+    now = [0.0]
+    monkeypatch.setattr('teleop_data_collector.live_continuity.time.monotonic', lambda: now[0])
+    image = Image()
+    image.width = image.height = 2
+    image.step = 4
+    image.encoding = '16UC1'
+    image.data = bytes(8)
+    assert not live.readiness.snapshot(0)['ready']
+    for i in range(102):
+        now[0] = i * .05
+        stamp = 1_000_000_000 + i * 50_000_000
+        image.header.stamp.sec, image.header.stamp.nanosec = divmod(stamp, 1_000_000_000)
+        subscribed[camera](serialize_message(image))
+    assert live.readiness.snapshot(now[0])['ready']
+    assert not live.monitor.active
+    assert live.monitor.snapshot()['alerts'] == []
+    assert not live.readiness.snapshot(now[0] + .3)['ready']
+    now[0] += .31
+    subscribed[camera](b'broken')
+    assert not live.readiness.snapshot(now[0])['ready']
+    assert live.monitor.snapshot()['auto_stop_reason'] is None

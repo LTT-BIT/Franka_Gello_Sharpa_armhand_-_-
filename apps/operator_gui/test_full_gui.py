@@ -289,6 +289,7 @@ def test_manus_unified_gui_collector_gap_stop_and_pedal_restart(tmp_path, monkey
                 live_continuity=self.report)))
             self.active = False
             self.current_bag_dir = None
+            self.on_recording_stopped()
             return bag
 
     recorder = Recorder()
@@ -298,7 +299,13 @@ def test_manus_unified_gui_collector_gap_stop_and_pedal_restart(tmp_path, monkey
     controller.set_ready()
     server = CollectorControlServer(('127.0.0.1', 0), controller)
     thread = server.start_in_thread()
-    window = OperatorWindow('127.0.0.1', port(), collection_port=server.server_address[1])
+    from teleop_runtime.episode_home import EpisodeHomeBridge
+    console = OperatorConsole()
+    arms = OperatorControlServer(('127.0.0.1', 0), console)
+    arms.start()
+    window = OperatorWindow('127.0.0.1', arms.server_address[1], collection_port=server.server_address[1])
+    bridge = EpisodeHomeBridge(server.server_address, arms.server_address, owner='f'*16)
+    bridge.start()
     window.collection_poll_timer.setInterval(20)
 
     def wait(predicate):
@@ -342,7 +349,16 @@ def test_manus_unified_gui_collector_gap_stop_and_pedal_restart(tmp_path, monkey
         assert window.continuity_dialog is not None
         assert not window.continuity_dialog.isModal()
         assert window.quality_dialog is None
-        assert window.collection_record_button.isEnabled()
+        assert not window.collection_record_button.isEnabled()
+        assert 'Home' in window.collection_status_label.text()
+        home = controller.status()['after_home']
+        wait(lambda: console.snapshot()['episode_home'].get('state') == 'queued')
+        job_id = console.snapshot()['episode_home']['id']
+        console.update_episode_home(job_id, 'running')
+        wait(lambda: window.collection_status['after_home']['state'] == 'running')
+        assert not controller.status()['can_start']
+        console.update_episode_home(job_id, 'done', 'offline simulated settling')
+        wait(lambda: window.collection_record_button.isEnabled())
         pedal.activated.emit()
         wait(lambda: window.collection_status.get('current_episode') == 'episode1')
         assert window.collection_state == 'RECORDING'
@@ -351,12 +367,15 @@ def test_manus_unified_gui_collector_gap_stop_and_pedal_restart(tmp_path, monkey
         assert window.collection_status['auto_stop_reason'] is None
         assert monitor.snapshot()['auto_stop_reason'] is None
     finally:
+        bridge.stopping.set()
+        bridge.thread.join(2)
         gate.set()
         controller.wait_for_finalization()
         controller.stop_if_present(interrupted=True)
         window.close()
         window.deleteLater()
         app.processEvents()
+        arms.close()
         server.shutdown()
         server.server_close()
         thread.join(1)
@@ -378,3 +397,67 @@ def test_manus_unified_gui_reports_missing_continuity_monitor(tmp_path, monkeypa
         window.close()
         window.deleteLater()
         app.processEvents()
+
+
+def test_unified_manus_home_and_capture_only_send_arm_commands(tmp_path,monkeypatch):
+    from unittest.mock import Mock
+    app=QApplication.instance() or QApplication([])
+    cfg=tmp_path/'session.json'
+    cfg.write_text(json.dumps(dict(source='manus',mode='fake',token='f'*64,control_port=port())))
+    monkeypatch.setenv('TELEOP_FULL_CONFIG',str(cfg))
+    monkeypatch.delenv('TELEOP_FULL_EXIT_SOCKET',raising=False)
+    window=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    window._send=Mock()
+    window.hand_client.request=Mock()
+    window.connection_state='connected'
+    try:
+        assert all(b.text()=='Record arm as Home' for b in window.capture_home_buttons.values())
+        pedal=next(s for s in window.shortcuts if s.key().toString()=='B')
+        pedal.activated.emit()
+        assert window._send.call_args.args==('home_arm',{'side':'both','task':'powder_weighing'})
+        window._record_current_home('left','assembly')
+        assert window._send.call_args.args==('capture_home',{'side':'left','task':'assembly'})
+        window.hand_client.request.assert_not_called()
+    finally:
+        window.close();window.deleteLater();app.processEvents()
+
+
+def test_unified_episode_home_gates_recording_and_pedal_retries(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    app = QApplication.instance() or QApplication([])
+    cfg = tmp_path / 'session.json'
+    cfg.write_text(json.dumps(dict(source='manus', mode='fake', token='f'*64, control_port=port())))
+    monkeypatch.setenv('TELEOP_FULL_CONFIG', str(cfg))
+    monkeypatch.delenv('TELEOP_FULL_EXIT_SOCKET', raising=False)
+    window = OperatorWindow('127.0.0.1', port(), collection_port=port())
+    window._send_collection = Mock()
+    window._send = Mock()
+    window.hand_client.request = Mock()
+    window.connection_state = 'connected'
+    try:
+        window._apply_collection_status(dict(state='READY', can_start=True))
+        window._toggle_collection_recording()
+        assert window._send_collection.call_args.args == ('start', {
+            'return_arm_home': {'task': 'powder_weighing', 'owner': 'f'*16}})
+        home = dict(id='episode1', state='running')
+        status = dict(state='FINALIZED', last_episode='episode1', quality='一般',
+                      can_start=False, after_home=home)
+        window._apply_collection_status(status)
+        assert not window.collection_record_button.isEnabled()
+        assert '机械臂 Home 中' in window.collection_status_label.text()
+        pedal = next(s for s in window.shortcuts if s.key().toString() == 'B')
+        pedal.activated.emit()
+        assert window._send_collection.call_args.args == ('retry_home', {'id': 'episode1', 'owner': 'f'*16})
+        window._send.assert_not_called()
+        home['state'] = 'failed'
+        window._apply_collection_status(status)
+        assert '中间踏板重试' in window.collection_status_label.text()
+        home['state'] = 'done'
+        status['can_start'] = True
+        window._apply_collection_status(status)
+        assert window.collection_record_button.isEnabled()
+        pedal.activated.emit()
+        assert window._send.call_args.args[0] == 'home_arm'
+        window.hand_client.request.assert_not_called()
+    finally:
+        window.close(); window.deleteLater(); app.processEvents()

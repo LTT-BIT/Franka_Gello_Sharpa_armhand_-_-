@@ -32,6 +32,7 @@ from apps.operator_gui.operator_gui import (
 def test_shortcut_bindings_match_the_workcell_layout():
     assert PEDAL_BINDINGS == {
         "A": ("toggle_hold", "arm", "left"),
+        "B": ("home", "arm", "both"),
         "C": ("toggle_hold", "arm", "right"),
     }
     assert COLLECTION_SHORTCUTS == {"L": "toggle_recording", "Space": "mark_milestone"}
@@ -39,7 +40,7 @@ def test_shortcut_bindings_match_the_workcell_layout():
     assert PRESET_KEYS == ("W", "E")
 
 
-def test_teleop_shortcuts_only_toggle_arm_hold(tmp_path):
+def test_teleop_shortcuts_toggle_hold_and_home_arms_only(tmp_path):
     QSettings.setPath(
         QSettings.NativeFormat, QSettings.UserScope, str(tmp_path)
     )
@@ -50,6 +51,7 @@ def test_teleop_shortcuts_only_toggle_arm_hold(tmp_path):
         window.socket.abort()
         window.reconnect_timer.stop()
         window.connection_state = "connected"
+        window._apply_status({})
         window._send = lambda command, arguments=None: sent.append(
             (command, arguments or {})
         )
@@ -72,9 +74,43 @@ def test_teleop_shortcuts_only_toggle_arm_hold(tmp_path):
 
     assert sent == [
         ("hold_arm", {"side": "left", "enabled": True}),
+        ("home_arm", {"side": "both", "task": "powder_weighing"}),
         ("hold_arm", {"side": "right", "enabled": True}),
         ("hold_arm", {"side": "left", "enabled": False}),
     ]
+
+
+def test_home_pedal_matches_button_and_hold_stays_locked_until_arrival(tmp_path):
+    from PySide6.QtWidgets import QPushButton
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path))
+    application=QApplication.instance() or QApplication([])
+    window=OperatorWindow('127.0.0.1',_unused_port());sent=[]
+    try:
+        window.socket.abort();window.reconnect_timer.stop()
+        window._send=lambda command,arguments=None:sent.append((command,arguments or {}))
+        status={'active':{'left':False,'right':False},'arm_authorized':{'left':True,'right':True},
+            'arm_hold':{'left':True,'right':True},'home_locked':True,'hand_active':{'left':True,'right':True}}
+        window._apply_status(status)
+        for side in ('left','right'):
+            assert window.arm_engage_buttons[side].isChecked()
+            assert window.arm_hold_buttons[side].isChecked()
+            assert not window.arm_hold_buttons[side].isEnabled()
+            assert window.hand_engage_buttons[side].isChecked()
+            window._shortcut_toggle_hold(side)
+        assert not sent
+        window._apply_status(dict(status,home_locked=False))
+        for side in ('left','right'):
+            assert window.arm_engage_buttons[side].isChecked() and window.arm_engage_buttons[side].isEnabled()
+            assert window.arm_hold_buttons[side].isChecked() and window.arm_hold_buttons[side].isEnabled()
+        b=next(s for s in window.shortcuts if s.key().toString()=='B')
+        b.activated.emit()
+        next(button for button in window.findChildren(QPushButton) if button.text()=='Home both arms').click()
+        assert sent==[('home_arm',{'side':'both','task':window._selected_task()})]*2
+        window._shortcut_toggle_hold('left')
+        assert sent[-1]==('hold_arm',{'side':'left','enabled':False})
+    finally:
+        window.poll_timer.stop();window.health_timer.stop();window.reconnect_timer.stop()
+        window.socket.abort();window.close();application.processEvents()
 
 
 def test_hold_button_sends_latched_publish_command(tmp_path):
@@ -540,3 +576,60 @@ def test_auto_failure_quality_dialog_only_allows_error_or_discard():
         assert dialog.buttons["放弃"].isEnabled()
     finally:
         dialog.close()
+
+
+def test_open_buttons_use_hand_supervisor_and_opening_keeps_start_disabled(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.delenv('TELEOP_FULL_CONFIG', raising=False)
+    monkeypatch.delenv('TELEOP_FULL_EXIT_SOCKET', raising=False)
+    application = QApplication.instance() or QApplication([])
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    window = OperatorWindow('127.0.0.1', _unused_port())
+    sent = []
+    try:
+        window.hand_client = SimpleNamespace(request=lambda command, args=None: sent.append((command,args)), close=lambda: None)
+        window._send('open_hand', {'side':'left'})
+        window._send('open_hand', {'side':'both'})
+        assert sent == [('open_hand', {'side':'left'}), ('open_hand', {'side':'both'})]
+        assert not window.pending  # No arm command is sent by this action.
+        window._apply_hand_status({'hands':{
+            'left':{'state':'OPENING','permit':False,'can_engage':False,'open_status':'正在张开'},
+            'right':{'state':'ACTIVE','permit':True}}})
+        assert window.hand_engage_buttons['left'].text() == 'Opening hand…'
+        assert not window.hand_engage_buttons['left'].isEnabled()
+        assert not window.hand_engage_buttons['left'].isChecked()
+        assert window.hand_engage_buttons['right'].isChecked()
+        window._apply_hand_status({'hands':{
+            'left':{'state':'READY','permit':False,'can_engage':True,'open_status':'已张开'},
+            'right':{'state':'ACTIVE','permit':True}}})
+        assert window.hand_engage_buttons['left'].text() == 'Start hand [READY]'
+        assert window.hand_engage_buttons['left'].isEnabled()
+        assert not window.hand_engage_buttons['left'].isChecked()
+        assert window.hand_engage_buttons['right'].isChecked()
+    finally:
+        window.close()
+        application.processEvents()
+
+
+def test_camera_warmup_is_shown_in_collection_strip_and_blocks_pedal(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    window = OperatorWindow('127.0.0.1', 1, collection_port=2)
+    sent = []
+    window._send_collection = lambda *args: sent.append(args)
+    try:
+        window._apply_collection_status(dict(state='WAITING', can_start=False, active=False,
+            continuity_enabled=True, start_readiness=dict(ready=False,
+                message='等待相机连续稳定 3 秒：/cam0/color/image_raw')))
+        assert '等待相机连续稳定 3 秒' in window.collection_status_label.text()
+        assert not window.collection_record_button.isEnabled()
+        window._toggle_collection_recording()
+        assert not sent
+        assert window.continuity_dialog is None
+        window._apply_collection_status(dict(state='READY', can_start=True, active=False,
+            start_readiness=dict(ready=True, message='')))
+        assert window.collection_record_button.isEnabled()
+        assert '等待相机' not in window.collection_status_label.text()
+    finally:
+        window.close()
+        window.deleteLater()
+        app.processEvents()

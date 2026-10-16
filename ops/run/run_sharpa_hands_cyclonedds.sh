@@ -177,4 +177,11 @@ export ROS_LOCALHOST_ONLY=1
 export ROS_DOMAIN_ID="$ARMS_DOMAIN"
 
 cd "$LITCHI_REPO"
+if [[ -n "$FULL_CONFIG" && "$HAND_SOURCE" == manus ]]; then
+  # Project-owned launch selects ordinary MANUS forwarding independently of
+  # the bundled validation launch. No changes to standalone or LitchiBot.
+  exec taskset -c "$HOUSEKEEPING_CPUSET" pixi run -e ros2 bash -c \
+    'source "$1/ros2/install/setup.bash"; shift; exec ros2 launch "$@"' -- \
+    "$LITCHI_REPO" "$GELLO_REPO/adapters/manus/teleop.launch.py" "${extra_args[@]}"
+fi
 exec taskset -c "$HOUSEKEEPING_CPUSET" pixi run -e ros2 teleop "${extra_args[@]}"

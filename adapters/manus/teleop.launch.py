@@ -1,0 +1,340 @@
+"""Project-owned MANUS launch; normal forwarding matches the standalone entry.
+
+Based on the bundled teleop launch. Validation paths retain their policies.
+"""
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction, RegisterEventHandler, Shutdown
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PythonExpression
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+import sys
+from pathlib import Path
+
+
+def validate_source(context):
+    source = LaunchConfiguration("hand_source").perform(context)
+    dry = LaunchConfiguration("dry_run").perform(context)
+    if source not in ("manus", "litchibot") or dry not in ("true", "false"):
+        raise RuntimeError("Invalid hand_source/dry_run")
+    full = LaunchConfiguration('full_teleop').perform(context)
+    if full not in ('true','false'): raise RuntimeError('Invalid full mode')
+    if full=='true':
+        driver_path=Path(LaunchConfiguration('validation_driver_script').perform(context)).resolve()
+        root=driver_path.parents[2]
+        if driver_path!=root/'adapters/litchibot/validation_driver.py':
+            raise RuntimeError('Canonical guarded host required')
+        sys.path.insert(0,str(root))
+        from adapters.litchibot.full_control import load_full_config
+        config=load_full_config(LaunchConfiguration('full_config').perform(context))
+        if config['source']!=source or (dry=='true' and config['mode']!='fake'):
+            raise RuntimeError('Full source/dry-run configuration conflict')
+        if source=='litchibot' and Path(LaunchConfiguration('litchibot_bridge_script').perform(context)).resolve()!=root/'adapters/litchibot/terminal2_bridge.py':
+            raise RuntimeError('Canonical source bridge required')
+        if any(LaunchConfiguration(k).perform(context)!='true' for k in ('enable_left','enable_right')):
+            raise RuntimeError('Full mode requires both configured hands')
+        if source=='litchibot' and LaunchConfiguration('litchibot_profile').perform(context)!=config['profile']:
+            raise RuntimeError('Full glove profile mismatch')
+        for name,limit in (('speed_coefficient',0.3),('current_coefficient',0.6)):
+            value=float(LaunchConfiguration(name).perform(context))
+            if not 0<value<=limit:raise RuntimeError('Guarded coefficient outside bounds')
+        context.launch_configurations.update(
+            full_fake='true' if config['mode']=='fake' else 'false',
+            full_manus_normal='true' if source=='manus' and config['mode'] in ('normal','fake') else 'false',
+            full_fake_input='true' if config.get('fake_input',False) else 'false',
+            # Match the imported adapter's audited session lifecycle. Normal
+            # LitchiBot Stop toggles forwarding without disabling the SDK;
+            # Manus and supervised validation retain their command watchdog.
+            full_command_timeout='0.0' if config['mode'] in ('normal','fake') else '0.2',
+            validation_left_serial=config['policy']['serials']['left'],
+            validation_right_serial=config['policy']['serials']['right'])
+        return
+    validation = LaunchConfiguration("supervised_hardware_validation").perform(context)
+    if validation not in ('true','false') or (validation=='true' and (source!='litchibot' or dry=='true')):
+        raise RuntimeError('Invalid supervised validation combination')
+    if source == "litchibot" and dry != "true" and validation != 'true':
+        raise RuntimeError("BLOCKER FOR REAL HARDWARE MOTION: left 1.5708 rad discontinuity; dry-run required")
+    if source == "litchibot" and not LaunchConfiguration("litchibot_bridge_script").perform(context):
+        raise RuntimeError("litchibot_bridge_script must be supplied by the Terminal 2 wrapper")
+    if validation=='true':
+        bridge_path=Path(LaunchConfiguration('litchibot_bridge_script').perform(context)).resolve()
+        driver_path=Path(LaunchConfiguration('validation_driver_script').perform(context)).resolve()
+        root=bridge_path.parents[2]
+        if bridge_path!=root/'adapters/litchibot/terminal2_bridge.py' or driver_path!=root/'adapters/litchibot/validation_driver.py':
+            raise RuntimeError('Canonical supervised bridge / guard paths required')
+        sys.path.insert(0,str(root))
+        from adapters.litchibot.validation_safety import load_permit
+        permit=load_permit(LaunchConfiguration('validation_permit').perform(context))
+        if LaunchConfiguration('litchibot_profile').perform(context)!=permit['profile']:
+            raise RuntimeError('Glove profile must match validation permit')
+        if LaunchConfiguration('use_fake_hardware').perform(context).lower()!='false' or any(LaunchConfiguration(k).perform(context)!='true' for k in ('enable_left','enable_right')):
+            raise RuntimeError('Validation requires real, explicitly bound dual hands')
+        for name,limit in (('speed_coefficient',0.3),('current_coefficient',0.6)):
+            value=float(LaunchConfiguration(name).perform(context))
+            if not 0 < value <= limit:
+                raise RuntimeError('Validation coefficient outside allowed bounds')
+        context.launch_configurations.update(validation_left_serial=permit['serials']['left'],
+            validation_right_serial=permit['serials']['right'])
+
+
+def generate_launch_description() -> LaunchDescription:
+    use_fake = LaunchConfiguration("use_fake_hardware")
+    enable_left = LaunchConfiguration("enable_left")
+    enable_right = LaunchConfiguration("enable_right")
+    source = LaunchConfiguration("hand_source")
+    dry_run = LaunchConfiguration("dry_run")
+    validation = LaunchConfiguration('supervised_hardware_validation')
+    full = LaunchConfiguration('full_teleop')
+    is_manus = IfCondition(PythonExpression(["'", source, "' == 'manus'"]))
+    is_litchibot = IfCondition(PythonExpression(["'", source, "' == 'litchibot'"]))
+    # Dry-run cannot connect the physical Sharpa SDK even with contradictory input flags.
+    effective_fake = ParameterValue(PythonExpression([
+        "'", dry_run, "' == 'true' or '", use_fake, "'.lower() == 'true'"
+    ]), value_type=bool)
+
+    arguments = [
+        DeclareLaunchArgument('full_teleop',default_value='false'),
+        DeclareLaunchArgument('full_config',default_value=''),
+        DeclareLaunchArgument("hand_source", default_value="manus"),
+        DeclareLaunchArgument("dry_run", default_value="false"),
+        DeclareLaunchArgument('supervised_hardware_validation',default_value='false'),
+        DeclareLaunchArgument('validation_permit',default_value=''),
+        DeclareLaunchArgument('validation_driver_script',default_value=''),
+        DeclareLaunchArgument("litchibot_bridge_script", default_value=""),
+        DeclareLaunchArgument("litchibot_python", default_value=EnvironmentVariable(
+            "LITCHIBOT_PYTHON", default_value="/home/user/litchibot_glove/.venv/bin/python")),
+        DeclareLaunchArgument("litchibot_profile", default_value="LYG226360006"),
+        DeclareLaunchArgument("litchibot_sdk_root", default_value=EnvironmentVariable(
+            "LITCHIBOT_SDK_ROOT", default_value="/home/user/litchibot_glove/litchibot-glove-0.1.0-ubuntu24.04-x86_64-cp310")),
+        DeclareLaunchArgument("litchibot_data_root", default_value=EnvironmentVariable(
+            "LITCHIBOT_DATA_DIR", default_value="/home/user/litchibot_glove/validation/user_data")),
+        DeclareLaunchArgument("litchibot_receiver_id", default_value=""),
+        DeclareLaunchArgument("litchibot_duration", default_value="0"),
+        DeclareLaunchArgument("litchibot_log_dir", default_value=""),
+        DeclareLaunchArgument(
+            "use_fake_hardware",
+            default_value="false",
+            description="Use in-process fake Manus and Sharpa devices.",
+        ),
+        DeclareLaunchArgument("enable_left", default_value="true"),
+        DeclareLaunchArgument("enable_right", default_value="true"),
+        DeclareLaunchArgument(
+            "manus_backend",
+            default_value="native",
+            description="Manus backend: native (in-process SDK) or zmq.",
+        ),
+        DeclareLaunchArgument(
+            "manus_endpoint", default_value="tcp://127.0.0.1:2044"
+        ),
+        DeclareLaunchArgument(
+            "manus_manage_client",
+            default_value="true",
+            description="Start and supervise a client for the ZMQ backend.",
+        ),
+        DeclareLaunchArgument(
+            "manus_client_executable",
+            default_value=EnvironmentVariable(
+                "MANUS_CLIENT_EXECUTABLE", default_value=""
+            ),
+            description="Optional vendor Manus client to start and supervise.",
+        ),
+        DeclareLaunchArgument(
+            "manus_client_working_directory",
+            default_value=EnvironmentVariable(
+                "MANUS_CLIENT_WORKING_DIRECTORY", default_value=""
+            ),
+            description="Directory containing ManusSDK libraries and calibration files.",
+        ),
+        DeclareLaunchArgument(
+            "manus_native_library",
+            default_value="",
+            description="Optional override for liblitchi_manus_bridge.so.",
+        ),
+        DeclareLaunchArgument(
+            "manus_calibration_directory",
+            default_value="",
+            description="Optional directory containing the Manus .mcal files.",
+        ),
+        DeclareLaunchArgument(
+            "manus_native_host_discovery_s", default_value="1"
+        ),
+        DeclareLaunchArgument(
+            "manus_native_loopback_only", default_value="false"
+        ),
+        DeclareLaunchArgument("left_sharpa_serial", default_value=""),
+        DeclareLaunchArgument("right_sharpa_serial", default_value=""),
+        DeclareLaunchArgument("publish_rate_hz", default_value="60.0"),
+        DeclareLaunchArgument("state_rate_hz", default_value="30.0"),
+        DeclareLaunchArgument("publish_tactile", default_value="true"),
+        DeclareLaunchArgument("tactile_poll_rate_hz", default_value="60.0"),
+        DeclareLaunchArgument(
+            "retarget_backend",
+            default_value="v4",
+            description="Retargeter: vendor V4 optimizer or analytic fallback.",
+        ),
+        DeclareLaunchArgument("smoothing_alpha", default_value="0.35"),
+        DeclareLaunchArgument("flexion_scale", default_value="1.0"),
+        DeclareLaunchArgument("abduction_scale", default_value="1.0"),
+        DeclareLaunchArgument("v4_filter_alpha", default_value="1.0"),
+        DeclareLaunchArgument(
+            "v4_worker_python",
+            default_value=EnvironmentVariable(
+                "LITCHI_RETARGET_V4_PYTHON", default_value=""
+            ),
+            description="Python 3.10 executable for the vendor V4 optimizer.",
+        ),
+        DeclareLaunchArgument("max_input_age_s", default_value="0.25"),
+        DeclareLaunchArgument("speed_coefficient", default_value="0.3"),
+        DeclareLaunchArgument("current_coefficient", default_value="0.6"),
+        DeclareLaunchArgument(
+            "stop_on_command_timeout_s",
+            default_value="0.0",
+            description="Stop Sharpa if retarget commands cease; zero disables.",
+        ),
+    ]
+
+    manus = Node(
+        condition=is_manus,
+        package="manus_driver",
+        executable="manus_driver",
+        name="manus_driver",
+        output="screen",
+        parameters=[
+            {
+                "use_fake_hardware": ParameterValue(PythonExpression([
+                    "'",LaunchConfiguration('full_fake_input',default='false'),"' == 'true' if '",full,
+                    "' == 'true' else ('",dry_run,"' == 'true' or '",use_fake,"'.lower() == 'true')"]),value_type=bool),
+                "backend": LaunchConfiguration("manus_backend"),
+                "reliable_keypoints": ParameterValue(PythonExpression(["'",full,"' == 'true' and '",LaunchConfiguration('full_manus_normal',default='false'),"' != 'true'"]), value_type=bool),
+                "endpoint": LaunchConfiguration("manus_endpoint"),
+                "manage_client": LaunchConfiguration("manus_manage_client"),
+                "client_executable": LaunchConfiguration(
+                    "manus_client_executable"
+                ),
+                "client_working_directory": LaunchConfiguration(
+                    "manus_client_working_directory"
+                ),
+                "native_library": LaunchConfiguration("manus_native_library"),
+                "native_host_discovery_s": LaunchConfiguration(
+                    "manus_native_host_discovery_s"
+                ),
+                "native_loopback_only": LaunchConfiguration(
+                    "manus_native_loopback_only"
+                ),
+                "calibration_directory": LaunchConfiguration(
+                    "manus_calibration_directory"
+                ),
+                "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
+                "publish_left": enable_left,
+                "publish_right": enable_right,
+            }
+        ],
+    )
+
+    retarget = Node(
+        condition=is_manus,
+        package="manus_sharpa_teleop",
+        executable="retarget_node",
+        name="manus_sharpa_retarget",
+        remappings=[(f'/sharpa/{side}/command',PythonExpression([
+            "'/teleop/sharpa/",side,"/target' if '",full,"' == 'true' else '/sharpa/",side,"/command'"]))
+            for side in ('left','right')],
+        output="screen",
+        parameters=[
+            {
+                "enable_left": enable_left,
+                "enable_right": enable_right,
+                "backend": LaunchConfiguration("retarget_backend"),
+                # Reserve transport time within the guarded 200 ms deadline.
+                # Standalone legacy mode retains its original output behavior.
+                "max_output_age_s": ParameterValue(PythonExpression([
+                    "0.15 if '", full, "' == 'true' and '",LaunchConfiguration('full_manus_normal',default='false'),"' != 'true' else 0.0"
+                ]), value_type=float),
+                "smoothing_alpha": LaunchConfiguration("smoothing_alpha"),
+                "flexion_scale": LaunchConfiguration("flexion_scale"),
+                "abduction_scale": LaunchConfiguration("abduction_scale"),
+                "v4_filter_alpha": LaunchConfiguration("v4_filter_alpha"),
+                "v4_worker_python": LaunchConfiguration("v4_worker_python"),
+                "max_input_age_s": LaunchConfiguration("max_input_age_s"),
+            }
+        ],
+    )
+
+    sharpa = Node(
+        condition=IfCondition(PythonExpression(["'",validation,"' != 'true' and '",full,"' != 'true'"])),
+        package="sharpa_driver",
+        executable="sharpa_driver",
+        name="sharpa_driver",
+        output="screen",
+        parameters=[
+            {
+                "use_fake_hardware": effective_fake,
+                "enable_left": enable_left,
+                "enable_right": enable_right,
+                "left_serial": LaunchConfiguration("left_sharpa_serial"),
+                "right_serial": LaunchConfiguration("right_sharpa_serial"),
+                "state_rate_hz": LaunchConfiguration("state_rate_hz"),
+                "publish_tactile": LaunchConfiguration("publish_tactile"),
+                "tactile_poll_rate_hz": LaunchConfiguration(
+                    "tactile_poll_rate_hz"
+                ),
+                "speed_coefficient": LaunchConfiguration("speed_coefficient"),
+                "current_coefficient": LaunchConfiguration(
+                    "current_coefficient"
+                ),
+                "stop_on_command_timeout_s": LaunchConfiguration(
+                    "stop_on_command_timeout_s"
+                ),
+            }
+        ],
+    )
+
+    bridge = ExecuteProcess(
+        condition=is_litchibot,
+        cmd=[sys.executable, LaunchConfiguration("litchibot_bridge_script"),
+             PythonExpression(["'--managed-full' if '",full,"' == 'true' else ('--supervised-hardware-validation' if '",validation,"' == 'true' else '--dry-run')"]),
+             '--full-config',LaunchConfiguration('full_config'),
+             '--validation-permit',LaunchConfiguration('validation_permit'),
+             "--worker-python", LaunchConfiguration("litchibot_python"),
+             "--profile", LaunchConfiguration("litchibot_profile"),
+             "--sdk-root", LaunchConfiguration("litchibot_sdk_root"),
+             "--data-root", LaunchConfiguration("litchibot_data_root"),
+             "--receiver-id", LaunchConfiguration("litchibot_receiver_id"),
+             "--duration", LaunchConfiguration("litchibot_duration"),
+             "--log-dir", LaunchConfiguration("litchibot_log_dir")],
+        output="screen",
+    )
+    guarded_driver=ExecuteProcess(
+        condition=IfCondition(PythonExpression(["'",validation,"' == 'true' or '",full,"' == 'true'"])),
+        cmd=[sys.executable,LaunchConfiguration('validation_driver_script'),
+             '--permit',LaunchConfiguration('validation_permit'),'--full-config',LaunchConfiguration('full_config'),'--ros-args','-r','__node:=sharpa_driver',
+             '-p',['use_fake_hardware:=',LaunchConfiguration('full_fake',default='false')],'-p','enable_left:=true','-p','enable_right:=true',
+             '-p',['left_serial:=',LaunchConfiguration('validation_left_serial')],
+             '-p',['right_serial:=',LaunchConfiguration('validation_right_serial')],
+             '-p',['stop_on_command_timeout_s:=',LaunchConfiguration('full_command_timeout',default='0.2')],
+             '-p',['speed_coefficient:=',LaunchConfiguration('speed_coefficient')],
+             '-p',['current_coefficient:=',LaunchConfiguration('current_coefficient')],
+             '-p',['state_rate_hz:=',LaunchConfiguration('state_rate_hz')],
+             '-p',['publish_tactile:=',LaunchConfiguration('publish_tactile')],
+             '-p',['tactile_poll_rate_hz:=',LaunchConfiguration('tactile_poll_rate_hz')]],output='screen')
+    return LaunchDescription(
+        [
+            *arguments,
+            OpaqueFunction(function=validate_source),
+            manus,
+            retarget,
+            sharpa,
+            guarded_driver,
+            bridge,
+            RegisterEventHandler(condition=IfCondition(full),event_handler=OnProcessExit(target_action=manus,
+                on_exit=[Shutdown(reason='Full Manus source exited')])),
+            RegisterEventHandler(condition=IfCondition(full),event_handler=OnProcessExit(target_action=retarget,
+                on_exit=[Shutdown(reason='Full Manus retarget exited')])),
+            RegisterEventHandler(OnProcessExit(target_action=bridge,
+                on_exit=[Shutdown(reason="LitchiBot worker/bridge finished")])),
+            RegisterEventHandler(OnProcessExit(target_action=guarded_driver,
+                on_exit=[Shutdown(reason='Supervised guarded driver finished')])),
+        ]
+    )

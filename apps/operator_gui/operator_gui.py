@@ -53,6 +53,7 @@ STATUS_TIMEOUT_SECONDS = 3.0
 SIDES = ("left", "right")
 PEDAL_BINDINGS = {
     "A": ("toggle_hold", "arm", "left"),
+    "B": ("home", "arm", "both"),
     "C": ("toggle_hold", "arm", "right"),
 }
 COLLECTION_SHORTCUTS = {"L": "toggle_recording", "Space": "mark_milestone"}
@@ -149,6 +150,12 @@ class QualityDialog(QDialog):
                 text += f"\n另有 {len(details) - 4} 条信息，详见采集日志。"
         if status.get("quality"):
             text += f"\n当前评价：{status['quality']}"
+        home = status.get("after_home") or {}
+        if home:
+            text += "\n" + {"pending": "机械臂即将 Home，可同时保存评价。",
+                "running": "机械臂正在 Home，可同时保存评价。",
+                "done": "机械臂已 Home；评价保存成功后可开始下一段。",
+                "failed": "机械臂 Home 未完成，请通过 Home 按钮或中间踏板重试。"}.get(home.get("state"), "等待停止写盘后 Home。")
         self.result_label.setText(text)
         self.set_available(bool(status.get("can_rate_quality")))
 
@@ -411,12 +418,10 @@ class OperatorWindow(QMainWindow):
         home_both = QPushButton("Home both arms")
         home_both.setFocusPolicy(Qt.NoFocus)
         home_both.clicked.connect(
-            lambda: self._send(
-                "home_arm", {"side": "both", "task": self._selected_task()}
-            )
+            lambda: self._shortcut_home("both")
         )
         self.action_buttons.append(home_both)
-        home_both.setToolTip("Homes both arms and disengages followers")
+        home_both.setToolTip("B: Home both arms; retain arm permits and stay in Hold after arrival")
         actions.addWidget(home_both)
         layout.addLayout(actions)
 
@@ -473,7 +478,7 @@ class OperatorWindow(QMainWindow):
 
         shortcut_hint = QLabel(
             "Shortcuts: L 开始/停止录制 · Space 中间完成标记  |  "
-            "A left Hold · C right Hold"
+            "A left Hold · B Home both arms · C right Hold"
         )
         shortcut_hint.setStyleSheet("color: #666;")
         layout.addWidget(shortcut_hint)
@@ -508,8 +513,7 @@ class OperatorWindow(QMainWindow):
             f"{task_label} Home?"
         )
         message.setInformativeText(
-            "The arm must be stopped. Recording does not move hardware; "
-            "the next Home command moves this arm to the recorded pose."
+            "The arm must be stopped. Recording does not move hardware; the next Home command moves this arm to the recorded pose."
         )
         message.setStandardButtons(QMessageBox.Save | QMessageBox.Cancel)
         message.setDefaultButton(QMessageBox.Cancel)
@@ -650,16 +654,24 @@ class OperatorWindow(QMainWindow):
             self._send(f"engage_{target}", {"side": side})
 
     def _shortcut_toggle_hold(self, side: str) -> None:
-        if self.connection_state != "connected":
+        if self.connection_state != "connected" or not self.arm_hold_buttons[side].isEnabled():
             return
         held = self.arm_hold_buttons[side].isChecked()
         self._send("hold_arm", {"side": side, "enabled": not held})
 
     def _shortcut_home(self, side: str) -> None:
         if self.connection_state == "connected":
+            home = self.collection_status.get("after_home") or {}
+            if side == "both" and home.get("state") == "armed" and self.collection_state in {"STOPPING", "VALIDATING"}:
+                return
+            if side == "both" and home.get("state") in {"pending", "running", "failed"}:
+                owner = self.full_config["token"][:16] if self.full_config else ""
+                self._send_collection("retry_home", {"id": home["id"], "owner": owner})
+                return
             self._send(
                 "home_arm", {"side": side, "task": self._selected_task()}
             )
+
 
     # -------------------------------------------------------------- socket
     def _connect(self) -> None:
@@ -965,7 +977,11 @@ class OperatorWindow(QMainWindow):
         if not self.collection_record_button.isEnabled():
             return
         command = "stop" if self.collection_state == "RECORDING" else "start"
-        self._send_collection(command)
+        arguments = {"return_arm_home": {"task": self._selected_task(), "owner": self.full_config["token"][:16]}} if command == "start" and self.full_config else None
+        if arguments is None:
+            self._send_collection(command)
+        else:
+            self._send_collection(command, arguments)
 
     def _mark_collection_milestone(self) -> None:
         if self.collection_milestone_button.isEnabled():
@@ -1017,11 +1033,16 @@ class OperatorWindow(QMainWindow):
         self.collection_state = state
         episode = status.get("current_episode") or status.get("last_episode") or "-"
         elapsed = status.get("elapsed_sec")
+        home = status.get("after_home") or {}
+        home_waiting = bool(home) and home.get("state") not in {"armed", "done"}
         detail = f" · {episode}"
         if status.get("continuity_enabled") is True:
             detail += " · 实时缺帧监控：开启"
         elif self.full_config and status.get("continuity_enabled") is False:
             detail += " · 实时缺帧监控：关闭（请使用触觉采集器）"
+        readiness = status.get("start_readiness") or {}
+        if not status.get("active") and readiness.get("message"):
+            detail += " · " + readiness["message"]
         if elapsed is not None:
             detail += f" · {float(elapsed):.1f}s"
         if status.get("quality"):
@@ -1042,12 +1063,21 @@ class OperatorWindow(QMainWindow):
         alerts = status.get("alerts") or []
         if status.get("auto_stop_reason"):
             detail += " · 本段已停止，正在收尾" if state in {"STOPPING", "VALIDATING"} else (
-                " · 已归类为报错，可再次踩踏板开始" if status.get("quality") == "报错" else " · 请保存报错或放弃分类")
+                (" · 已归类为报错，等待相机稳定" if readiness.get("ready") is False
+                 else " · 已归类为报错，等待机械臂 Home" if home_waiting
+                 else " · 已归类为报错，可再次踩踏板开始")
+                if status.get("quality") == "报错" else " · 请保存报错或放弃分类")
         elif alerts:
             latest = max(alerts, key=lambda a: a.get("id", 0))
             detail += " · 预警：" + self._continuity_alert_text(latest)
             if state == "RECORDING":
                 detail += " · 录制继续"
+        if home.get("state") != "armed" and home:
+            home_text = {"pending": "等待机械臂 Home", "running": "机械臂 Home 中",
+                         "done": "机械臂已 Home", "failed": "Home 未完成：请点 Home both arms 或踩中间踏板重试"}
+            detail += " · " + home_text.get(home.get("state"), "Home 状态未知")
+            if home.get("state") == "failed" and home.get("message"):
+                detail += "（" + home["message"] + "）"
         self.collection_status_label.setToolTip("\n".join(self._continuity_alert_text(a) for a in alerts))
         self.collection_status_label.setText(f"{state}{detail}")
         self._update_continuity_alerts(status)
@@ -1061,6 +1091,8 @@ class OperatorWindow(QMainWindow):
             style = "color: #a35b00; font-weight: bold;"
         elif self.full_config and status.get("continuity_enabled") is False:
             style = "color: #a35b00; font-weight: bold;"
+        elif home_waiting:
+            style = "color: #a35b00; font-weight: bold;"
         elif state in {"READY", "FINALIZED"}:
             style = "color: #248a3d; font-weight: bold;"
         elif state in {"INCOMPLETE", "INTERRUPTED", "DISCARDED"}:
@@ -1068,7 +1100,7 @@ class OperatorWindow(QMainWindow):
         else:
             style = "color: #777; font-weight: bold;"
         self.collection_status_label.setStyleSheet(style)
-        can_start = bool(status.get("can_start"))
+        can_start = bool(status.get("can_start")) and not getattr(self, "arm_home_locked", False)
         can_stop = bool(status.get("can_stop"))
         self.collection_record_button.setText(
             "停止并校验 (L)" if can_stop else "开始录制 (L)"
@@ -1152,7 +1184,12 @@ class OperatorWindow(QMainWindow):
         self.continuity_dialog.setWindowTitle("录制已因连续性错误停止")
         self.continuity_message.setStyleSheet("color: #c22525;")
         lines = [f"数据编号：{episode_key[1]}"]
-        lines.append("本段已归类为报错，可再次踩 L 踏板开始。" if status.get("quality") == "报错"
+        camera_waiting = (status.get("start_readiness") or {}).get("ready") is False
+        home = status.get("after_home") or {}
+        home_waiting = bool(home) and home.get("state") != "done"
+        lines.append(("本段已归类为报错，等待机械臂 Home 完成。" if home_waiting
+                      else "本段已归类为报错，等待相机稳定后再踩 L 开始。" if camera_waiting
+                      else "本段已归类为报错，可再次踩 L 踏板开始。") if status.get("quality") == "报错"
                      else "本段失败，请保存报错或放弃分类后重新开始。")
         for alert in sorted(alerts, key=lambda a: (a.get("severity") != "failure", a.get("topic", "")))[:12]:
             text = self._continuity_alert_text(alert)
@@ -1192,23 +1229,30 @@ class OperatorWindow(QMainWindow):
             self._set_connection_state("connected")
         self.status_label.setPlainText(str(status.get("status_line", "-")))
         active = status.get("active", {})
+        authorized = status.get("arm_authorized", active)
+        home_locked = bool(status.get("home_locked", False))
+        self.arm_home_locked = home_locked
+        if home_locked and self.collection_state != "RECORDING":
+            self.collection_record_button.setEnabled(False)
         arm_hold = status.get("arm_hold", {})
         for side, button in self.arm_engage_buttons.items():
-            engaged = bool(active.get(side))
+            engaged = bool(authorized.get(side))
             button.blockSignals(True)
             button.setChecked(engaged)
             button.setText(
                 "Arm running"
-                if engaged
+                if engaged and active.get(side)
+                else "Arm enabled (Hold)" if engaged
                 else "Start arm"
             )
-            button.setEnabled(not bool(arm_hold.get(side)))
+            button.setEnabled(not home_locked)
             button.blockSignals(False)
         for side, button in self.arm_hold_buttons.items():
             held = bool(arm_hold.get(side))
             key_hint = ARM_HOLD_KEY_HINTS[side]
             button.blockSignals(True)
             button.setChecked(held)
+            button.setEnabled(not home_locked)
             button.setText(
                 f"Release Hold ({key_hint})"
                 if held
@@ -1229,7 +1273,8 @@ class OperatorWindow(QMainWindow):
             button.blockSignals(False)
         for side, button in self.capture_home_buttons.items():
             button.setEnabled(
-                not self.arm_engage_buttons[side].isChecked()
+                not home_locked
+                and not self.arm_engage_buttons[side].isChecked()
                 and not self.arm_hold_buttons[side].isChecked()
             )
         both_stopped = not any(
@@ -1237,7 +1282,7 @@ class OperatorWindow(QMainWindow):
         ) and not any(
             button.isChecked() for button in self.arm_hold_buttons.values()
         )
-        self.capture_ready_button.setEnabled(both_stopped)
+        self.capture_ready_button.setEnabled(both_stopped and not home_locked)
         feedback = status.get("feedback", [])
         # Re-render the ring wholesale: the server caps it at 50 lines, so
         # replacing the text is the simplest correct display.
@@ -1260,10 +1305,12 @@ class OperatorWindow(QMainWindow):
             data=status.get('hands',{}).get(side,{})
             state=data.get('state','OFFLINE');permit=bool(data.get('permit'))
             old_data=previous.get('hands',{}).get(side,{})
+            if data.get('open_status') and data.get('open_status')!=old_data.get('open_status'):
+                self._hand_event(f'{side}: '+data['open_status'])
             if data.get('reason') and (data.get('reason'),state)!=(old_data.get('reason'),old_data.get('state')):
                 self._hand_event(f'{side}: {state}: '+data['reason'])
             button.blockSignals(True);button.setChecked(permit)
-            button.setText(('Stop hand' if permit else 'Start hand')+f' [{state}]')
+            button.setText('Opening hand…' if state=='OPENING' else ('Stop hand' if permit else 'Start hand')+f' [{state}]')
             button.setEnabled((state not in ('FAULT','HARD_FAULT','OFFLINE','RECOVERING')) and (state!='SOFT_HOLD' or permit) and (permit or data.get('can_engage',True)))
             button.setToolTip('Supervisor state: '+state+' | '+str(data.get('reason') or status.get('reason','')))
             button.blockSignals(False)
