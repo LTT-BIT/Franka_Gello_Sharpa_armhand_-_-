@@ -461,3 +461,80 @@ def test_unified_episode_home_gates_recording_and_pedal_retries(tmp_path, monkey
         window.hand_client.request.assert_not_called()
     finally:
         window.close(); window.deleteLater(); app.processEvents()
+
+
+def test_storage_sidebar_sends_selected_parent_and_reports_final_location(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG', raising=False)
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path / 'settings'))
+    window = OperatorWindow('127.0.0.1', port(), collection_port=port())
+    window._send_collection = Mock()
+    try:
+        parent = tmp_path / 'saved'
+        status = dict(state='READY', can_start=True,
+                      storage_settings=dict(supported=True, default_parent=str(parent)))
+        window._apply_collection_status(status)
+        assert window.storage_parent_edit.text() == str(parent)
+        assert all(f'{letter}  {quality}' in window.storage_preview.text()
+                   for quality, letter in [('优等', 'A'), ('一般', 'B'), ('报错', 'C'), ('放弃', 'D')])
+        chosen = tmp_path / 'selected'
+        monkeypatch.setattr('apps.operator_gui.operator_gui.QFileDialog.getExistingDirectory', lambda *args: str(chosen))
+        window.storage_browse_button.click()
+        window._toggle_collection_recording()
+        assert window._send_collection.call_args.args == ('start', {'storage_parent': str(chosen)})
+        assert window.settings.value('collection_storage_parent') == str(chosen)
+        # While recording, changing the next parent never changes this episode.
+        frozen = dict(parent=str(chosen), episode='episode52', state='recording',
+                      path=str(chosen / '.pending' / 'episode52'))
+        window._apply_collection_status(dict(status, state='RECORDING', active=True,
+                                            can_start=False, can_stop=True, storage=frozen))
+        window.storage_parent_edit.setText(str(tmp_path / 'next'))
+        assert window.storage_episode_label.text() == 'episode52 · 录制中 · 暂存'
+        assert str(chosen) in window.storage_episode_label.toolTip()
+        final = dict(frozen, state='saved', path=str(chosen / 'A' / 'episode52'))
+        window._apply_collection_status(dict(status, state='FINALIZED', quality='优等', storage=final))
+        assert '已归档' in window.storage_episode_label.text()
+        assert window.storage_episode_label.text() == 'episode52 · 已归档 A'
+        assert final['path'] in window.storage_episode_label.toolTip()
+        assert window.storage_open_button.isEnabled()
+        failed = dict(frozen, state='failed', message='target already exists')
+        window._apply_collection_status(dict(status, state='INCOMPLETE', can_start=False, storage=failed))
+        assert not window.collection_record_button.isEnabled()
+        assert '重新选择质量重试' in window.storage_episode_label.text()
+    finally:
+        window.close(); window.deleteLater(); app.processEvents()
+
+
+def test_finish_path_edit_restores_pedal_shortcuts(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    app = QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG', raising=False)
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path / 'settings'))
+    window = OperatorWindow('127.0.0.1', port(), collection_port=port())
+    window._send_collection = Mock()
+    window._send = Mock()
+    try:
+        window.show()
+        window.activateWindow()
+        app.processEvents()
+        window.socket.blockSignals(True)
+        window.collection_socket.blockSignals(True)
+        window.connection_state = 'connected'
+        parent = str(tmp_path / 'saved')
+        window._apply_collection_status(dict(state='READY', can_start=True,
+            storage_settings=dict(supported=True, default_parent=parent)))
+        window.storage_parent_edit.setFocus()
+        QTest.keyClick(window.storage_parent_edit, Qt.Key_Return)
+        app.processEvents()
+        assert not window.storage_parent_edit.hasFocus()
+        QTest.keyClick(window, Qt.Key_L)
+        app.processEvents()
+        assert window._send_collection.call_args.args == ('start', {'storage_parent': parent})
+        QTest.keyClick(window, Qt.Key_B)
+        app.processEvents()
+        assert window._send.call_args.args == ('home_arm', {'side': 'both', 'task': 'powder_weighing'})
+    finally:
+        window.close(); window.deleteLater(); app.processEvents()

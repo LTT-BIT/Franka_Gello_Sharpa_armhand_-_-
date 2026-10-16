@@ -297,12 +297,15 @@ if [[ "$WITH_CAMERAS" == true ]]; then
   camera_mount=(-v "$CAMERA_CONFIG:/collection_camera_config.yaml:ro")
 fi
 collector_name="sharpa-tactile-data-collection-$$"
+source "$REPO_ROOT/ops/lib/collection_storage.sh"
 docker compose run -d --name "$collector_name" --no-deps \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
   -e ORBBEC_SDK_LICENSE_ACCEPTED="${ORBBEC_SDK_LICENSE_ACCEPTED:-NO}" \
   -e COLLECTION_RECORD_CONFIG=/workspace/franka_upper_body_teleop/data_collection/config/record_gello_sharpa_tactile.yaml \
   -e COLLECTION_OUTPUT_DIR="$container_output_dir" \
+  -e COLLECTION_HOST_DATA_ROOT="$DATA_ROOT" \
+  -e COLLECTION_STORAGE_ROOTS="$COLLECTION_STORAGE_ROOTS" \
   -e COLLECTION_QUALITY_DIR="$container_quality_dir" \
   -e COLLECTION_WORKCELL_HASH="$WORKCELL_HASH" \
   -e COLLECTION_CONTROL_PORT="$COLLECTION_CONTROL_PORT" \
@@ -317,6 +320,7 @@ docker compose run -d --name "$collector_name" --no-deps \
   -e COLLECTION_CAM2_SERIAL="${CAMERA_VALUES[4]}" \
   -e COLLECTION_CAM2_SEMANTIC="${CAMERA_VALUES[5]}" \
   -v "$DATA_ROOT:/collection_data" \
+  "${collection_storage_mounts[@]}" \
   "${camera_mount[@]}" \
   data-collection \
   /workspace/franka_upper_body_teleop/ops/run/run_sharpa_camera_recording_container.sh \

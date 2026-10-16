@@ -22,8 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal, QEvent
-from PySide6.QtGui import QAction, QFontDatabase, QKeySequence, QShortcut
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal, QEvent, QUrl
+from PySide6.QtGui import QDesktopServices, QAction, QFontDatabase, QKeySequence, QShortcut
 from PySide6.QtNetwork import QAbstractSocket, QTcpSocket
 from PySide6.QtWidgets import (
     QApplication,
@@ -31,6 +31,9 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
+    QScrollArea,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -150,6 +153,9 @@ class QualityDialog(QDialog):
                 text += f"\n另有 {len(details) - 4} 条信息，详见采集日志。"
         if status.get("quality"):
             text += f"\n当前评价：{status['quality']}"
+        storage = status.get("storage") or {}
+        if storage:
+            text += f"\n保存父目录：{storage.get('parent', '')}\n优等→A　一般→B　报错→C　放弃→D"
         home = status.get("after_home") or {}
         if home:
             text += "\n" + {"pending": "机械臂即将 Home，可同时保存评价。",
@@ -269,7 +275,8 @@ class OperatorWindow(QMainWindow):
         root = QWidget(self)
         layout = QVBoxLayout(root)
 
-        layout.addWidget(QLabel("System status"))
+        self.system_status_heading = QLabel("System status")
+        layout.addWidget(self.system_status_heading)
         self.status_label = QPlainTextEdit("-")
         self.status_label.setReadOnly(True)
         self.status_label.setFixedHeight(100)
@@ -490,11 +497,136 @@ class OperatorWindow(QMainWindow):
         self.feedback.setPlaceholderText("Backend messages will appear here.")
         layout.addWidget(self.feedback, stretch=1)
 
-        self.setCentralWidget(root)
+        container = QWidget(self)
+        columns = QHBoxLayout(container)
+        columns.setContentsMargins(0, 0, 0, 0)
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setFrameShape(QFrame.NoFrame)
+        controls_scroll.setWidget(root)
+        columns.addWidget(controls_scroll, stretch=1)
+        storage_scroll = QScrollArea()
+        storage_scroll.setMinimumWidth(310)
+        storage_scroll.setMaximumWidth(360)
+        storage_scroll.setWidgetResizable(True)
+        storage_scroll.setFrameShape(QFrame.NoFrame)
+        storage_scroll.setWidget(self._build_storage_sidebar())
+        columns.addWidget(storage_scroll)
+        self.setCentralWidget(container)
         self.connection_indicator = QLabel()
         self.connection_indicator.setContentsMargins(4, 0, 4, 0)
         self.statusBar().addPermanentWidget(self.connection_indicator)
-        self.resize(980, 900)
+        self.resize(1320, 960)
+
+    def _build_storage_sidebar(self) -> QWidget:
+        panel = QWidget()
+        panel.setMinimumWidth(290)
+        panel.setMaximumWidth(350)
+        column = QVBoxLayout(panel)
+        self.storage_heading = QLabel("本地采集设置")
+        self.storage_heading.setFont(self.system_status_heading.font())
+        self.storage_heading.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        # Match the left caption and the document's first-line inset, without
+        # retaining the old full-height title frame.
+        self.storage_heading.setFixedHeight(
+            self.system_status_heading.sizeHint().height()
+            + self.status_label.frameWidth() + int(self.status_label.document().documentMargin())
+        )
+        column.addWidget(self.storage_heading)
+        self.storage_parent_label = QLabel("保存父目录")
+        self.storage_parent_label.setFont(self.status_label.font())
+        column.addWidget(self.storage_parent_label)
+        row = QHBoxLayout()
+        self.storage_parent_edit = QLineEdit(str(self.settings.value("collection_storage_parent", "")))
+        self.storage_parent_edit.setPlaceholderText("选择本机文件夹…")
+        self.storage_parent_edit.setFocusPolicy(Qt.ClickFocus)
+        self.storage_parent_edit.returnPressed.connect(self._finish_storage_edit)
+        self.storage_parent_edit.editingFinished.connect(self._remember_storage_parent)
+        self.storage_parent_edit.textChanged.connect(self._update_storage_preview)
+        row.addWidget(self.storage_parent_edit, stretch=1)
+        self.storage_browse_button = QPushButton("浏览…")
+        self.storage_browse_button.setFocusPolicy(Qt.NoFocus)
+        self.storage_browse_button.clicked.connect(self._browse_storage_parent)
+        row.addWidget(self.storage_browse_button)
+        column.addLayout(row)
+        self.storage_preview = QLabel()
+        self.storage_preview.setWordWrap(True)
+        self.storage_preview.setTextFormat(Qt.PlainText)
+        self.storage_preview.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.storage_preview.setStyleSheet("color: #285d49; background: white; border: 1px solid #b8b8b8; padding: 8px;")
+        column.addWidget(self.storage_preview)
+        column.addSpacing(18)
+        column.addWidget(QLabel("本段保存状态"))
+        self.storage_episode_label = QLabel("等待采集器连接")
+        self.storage_episode_label.setWordWrap(True)
+        self.storage_episode_label.setTextFormat(Qt.PlainText)
+        self.storage_episode_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        column.addWidget(self.storage_episode_label)
+        self.storage_open_button = QPushButton("打开本段文件夹")
+        self.storage_open_button.setFocusPolicy(Qt.NoFocus)
+        self.storage_open_button.setEnabled(False)
+        self.storage_open_button.clicked.connect(self._open_episode_folder)
+        column.addWidget(self.storage_open_button)
+        column.addStretch(1)
+        self._update_storage_preview()
+        return panel
+
+    def _update_storage_preview(self, *_args) -> None:
+        parent = self.storage_parent_edit.text().strip()
+        parent = str(Path(parent).expanduser()) if parent else ""
+        lines = [f"A  优等  →  {Path(parent) / 'A' if parent else '待选择'}"]
+        lines += [f"{folder}  {quality}  →  ../{folder}"
+                  for quality, folder in (("一般", "B"), ("报错", "C"), ("放弃", "D"))]
+        self.storage_preview.setText("\n".join(lines))
+
+    def _remember_storage_parent(self) -> None:
+        value = self.storage_parent_edit.text().strip()
+        if value:
+            value = str(Path(value).expanduser())
+            self.storage_parent_edit.setText(value)
+        self.settings.setValue("collection_storage_parent", value)
+        self.storage_parent_edit.setToolTip(value)
+        self.storage_parent_edit.setCursorPosition(0)
+
+    def _finish_storage_edit(self) -> None:
+        self._remember_storage_parent()
+        self.storage_parent_edit.clearFocus()
+        self.setFocus(Qt.OtherFocusReason)
+
+    def _browse_storage_parent(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "选择 episode 保存父目录", self.storage_parent_edit.text())
+        if chosen:
+            self.storage_parent_edit.setText(chosen)
+            self._finish_storage_edit()
+
+    def _open_episode_folder(self) -> None:
+        path = (self.collection_status.get("storage") or {}).get("path")
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _apply_storage_status(self, status: dict) -> None:
+        settings = status.get("storage_settings") or {}
+        if not self.storage_parent_edit.text().strip() and settings.get("default_parent"):
+            self.storage_parent_edit.setText(settings["default_parent"])
+            self._remember_storage_parent()
+        storage = status.get("storage") or {}
+        self.storage_open_button.setEnabled(bool(storage.get("path")))
+        if storage:
+            state = storage.get("state")
+            label = {"recording": "录制中 · 暂存", "pending": "校验完成 · 待选择质量",
+                     "archiving": "正在归档", "saved": "已归档", "failed": "归档未完成 · 请重新选择质量重试"}.get(state, str(state))
+            folder = storage.get("folder") or (Path(storage["path"]).parent.name if state == "saved" and storage.get("path") else "")
+            suffix = f" {folder}" if state == "saved" and folder in {"A", "B", "C", "D"} else ""
+            text = f"{storage.get('episode', '')} · {label}{suffix}"
+            color = "#c22525" if state == "failed" else "#285d49"
+        else:
+            text = "尚未开始本段" if settings.get("supported") else "等待支持归档的采集器连接"
+            color = "#666"
+        self.storage_episode_label.setText(text)
+        details = [str(storage.get("path", "")), str(storage.get("message", ""))]
+        self.storage_episode_label.setToolTip("\n".join(value for value in details if value))
+        self.storage_open_button.setToolTip(str(storage.get("path", "")))
+        self.storage_episode_label.setStyleSheet(f"color: {color};")
 
     def _confirm_capture_home(self, side: str) -> None:
         """Confirm before overwriting one arm's persisted Home pose."""
@@ -921,7 +1053,12 @@ class OperatorWindow(QMainWindow):
         self.collection_next_request_id += 1
         self.collection_pending[request_id] = command
         if command == "start":
-            self.collection_status_label.setText("STARTING — 正在启动 rosbag…")
+            self.collection_state = "STARTING"
+            self.collection_status_label.setText("STARTING — 正在启动新 episode…")
+            self.collection_status_label.setToolTip("")
+            self.collection_status_label.setStyleSheet("color: #777; font-weight: bold;")
+            if self.continuity_dialog is not None:
+                self.continuity_dialog.close()
         elif command == "stop":
             self.collection_status_label.setText("STOPPING — 正在结束并校验…")
         elif command == "discard":
@@ -978,6 +1115,13 @@ class OperatorWindow(QMainWindow):
             return
         command = "stop" if self.collection_state == "RECORDING" else "start"
         arguments = {"return_arm_home": {"task": self._selected_task(), "owner": self.full_config["token"][:16]}} if command == "start" and self.full_config else None
+        if command == "start" and (self.collection_status.get("storage_settings") or {}).get("supported"):
+            parent = self.storage_parent_edit.text().strip()
+            if not parent:
+                self.feedback.appendPlainText("请选择右侧的保存父目录后再开始录制")
+                return
+            self._remember_storage_parent()
+            arguments = dict(arguments or {}, storage_parent=self.storage_parent_edit.text().strip())
         if arguments is None:
             self._send_collection(command)
         else:
@@ -1013,6 +1157,10 @@ class OperatorWindow(QMainWindow):
                     )
                 self._poll_collection_status()
                 continue
+            # A status request sent just before L may still describe the old
+            # episode. Keep the cleared STARTING display until start replies.
+            if command == "status" and "start" in self.collection_pending.values():
+                continue
             self._apply_collection_status(response.get("result", {}))
             if command in {"rate_quality", "discard"}:
                 result = response.get("result", {})
@@ -1029,6 +1177,7 @@ class OperatorWindow(QMainWindow):
 
     def _apply_collection_status(self, status: dict) -> None:
         self.collection_status = dict(status)
+        self._apply_storage_status(status)
         state = str(status.get("state") or "UNKNOWN").upper()
         self.collection_state = state
         episode = status.get("current_episode") or status.get("last_episode") or "-"
@@ -1101,6 +1250,8 @@ class OperatorWindow(QMainWindow):
             style = "color: #777; font-weight: bold;"
         self.collection_status_label.setStyleSheet(style)
         can_start = bool(status.get("can_start")) and not getattr(self, "arm_home_locked", False)
+        if (status.get("storage_settings") or {}).get("supported") and not self.storage_parent_edit.text().strip():
+            can_start = False
         can_stop = bool(status.get("can_stop"))
         self.collection_record_button.setText(
             "停止并校验 (L)" if can_stop else "开始录制 (L)"

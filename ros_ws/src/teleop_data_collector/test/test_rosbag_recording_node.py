@@ -716,3 +716,99 @@ def test_saved_home_cannot_bypass_quality_save_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(collector_control, 'save_quality', save)
     controller.rate_quality(recorder.last_bag_dir.name, '一般')
     assert controller.status()['can_start']
+
+
+def test_quality_archiving_moves_full_bag_and_preserves_home_gate(tmp_path, monkeypatch):
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    parent = tmp_path / 'selected'
+    controller.start({'task': 'assembly'}, storage_parent=str(parent))
+    bag = recorder.current_bag_dir
+    assert bag.parent == parent / '.pending'
+    (bag / 'raw.mcap').write_bytes(b'raw recording')
+    inode = (bag / 'raw.mcap').stat().st_ino
+    controller.stop()
+    home = controller.status()['after_home']
+    status = controller.rate_quality(bag.name, '优等')
+    destination = parent / 'A' / bag.name
+    assert not bag.exists()
+    assert recorder.last_bag_dir == destination
+    assert (destination / 'raw.mcap').stat().st_ino == inode
+    assert status['storage']['state'] == 'saved'
+    assert status['quality'] == '优等'
+    assert not status['can_start']  # Home is independently pending.
+    controller.report_home(dict(id=home['id'], attempt=0, state='done'))
+    assert controller.status()['can_start']
+    state = json.loads((destination / 'collection_state.json').read_text())
+    assert state['after_home']['state'] == 'done'
+    assert state['source_bag'] == str(destination)
+    assert state['storage']['path'] == str(destination)
+    # Changing quality moves the same data; discard retains everything in D.
+    controller.rate_quality(bag.name, '一般')
+    assert (parent / 'B' / bag.name / 'raw.mcap').is_file()
+    controller.discard()
+    assert (parent / 'D' / bag.name / 'raw.mcap').is_file()
+    assert controller.status()['storage']['state'] == 'saved'
+    assert controller.status()['quality'] == '放弃'
+
+
+def test_archive_collision_is_retryable_and_blocks_next_episode(tmp_path, monkeypatch):
+    controller, recorder, _, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    parent = tmp_path / 'selected'
+    controller.start(storage_parent=str(parent))
+    bag = recorder.current_bag_dir
+    (bag / 'raw.mcap').write_bytes(b'keep')
+    controller.stop()
+    collision = parent / 'A' / bag.name
+    collision.mkdir()
+    with pytest.raises(FileExistsError):
+        controller.rate_quality(bag.name, '优等')
+    assert bag.exists()
+    assert controller.status()['storage']['state'] == 'failed'
+    assert not controller.status()['can_start']
+    with pytest.raises(RuntimeError, match='归档'):
+        controller.start()
+    collision.rmdir()
+    controller.rate_quality(bag.name, '优等')
+    assert controller.status()['can_start']
+
+
+def test_auto_failure_archives_in_c_without_waiting_for_gui(tmp_path, monkeypatch):
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    parent = tmp_path / 'selected'
+    controller.start({'task': 'assembly'}, storage_parent=str(parent))
+    _severe_gap(monitor)
+    controller.check_continuity()
+    controller.wait_for_finalization()
+    status = controller.status()
+    assert status['quality'] == '报错'
+    assert Path(status['last_bag']).parent == parent / 'C'
+    assert status['storage']['state'] == 'saved'
+    assert not status['can_start']
+    assert status['state'] == 'INCOMPLETE'
+    with pytest.raises(ValueError, match='报错或放弃'):
+        controller.rate_quality(status['last_episode'], '优等')
+
+
+def test_archive_move_then_classification_failure_retries_at_new_path(tmp_path, monkeypatch):
+    from teleop_data_collector import collector_control
+    controller, recorder, _, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    parent = tmp_path / 'selected'
+    controller.start(storage_parent=str(parent))
+    controller.stop()
+    episode = recorder.last_bag_dir.name
+    real_save = collector_control.save_quality
+    def fail(*args):
+        raise OSError('quality lists unavailable')
+    monkeypatch.setattr(collector_control, 'save_quality', fail)
+    with pytest.raises(OSError):
+        controller.rate_quality(episode, '一般')
+    assert recorder.last_bag_dir == parent / 'B' / episode
+    assert not controller.status()['can_start']
+    assert controller.status()['quality_pending']
+    monkeypatch.setattr(collector_control, 'save_quality', real_save)
+    controller.rate_quality(episode, '一般')
+    assert controller.status()['can_start']

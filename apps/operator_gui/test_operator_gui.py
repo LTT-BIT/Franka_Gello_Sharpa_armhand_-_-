@@ -633,3 +633,41 @@ def test_camera_warmup_is_shown_in_collection_strip_and_blocks_pedal(tmp_path):
         window.close()
         window.deleteLater()
         app.processEvents()
+
+
+def test_new_episode_clears_old_collection_display_before_start_reply(tmp_path):
+    from unittest.mock import Mock
+    from PySide6.QtNetwork import QAbstractSocket
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    application = QApplication.instance() or QApplication([])
+    window = OperatorWindow('127.0.0.1', _unused_port(), collection_port=_unused_port())
+    window.collection_socket.abort()
+    window.collection_socket = Mock()
+    window.collection_socket.state.return_value = QAbstractSocket.ConnectedState
+    old = dict(state='INCOMPLETE', last_episode='episode52', quality='报错', can_start=True,
+               failures=['old failure'], alerts=[dict(id=1, severity='warning', topic='/cam0', message='old gap')])
+    try:
+        window._apply_collection_status(old)
+        assert 'episode52' in window.collection_status_label.text()
+        assert 'failure' in window.collection_status_label.text()
+        # An earlier poll may be outstanding when L requests the next episode.
+        assert window._send_collection('status')
+        poll_id = window.collection_next_request_id - 1
+        assert window._send_collection('start')
+        start_id = window.collection_next_request_id - 1
+        assert window.collection_state == 'STARTING'
+        assert 'episode52' not in window.collection_status_label.text()
+        assert not window.collection_status_label.toolTip()
+        window.collection_socket.readAll.return_value = (json.dumps(dict(id=poll_id, ok=True, result=old))+'\n').encode()
+        window._read_collection_responses()
+        assert window.collection_state == 'STARTING'
+        assert 'episode52' not in window.collection_status_label.text()
+        new = dict(state='RECORDING', active=True, current_episode='episode53', can_stop=True)
+        window.collection_socket.readAll.return_value = (json.dumps(dict(id=start_id, ok=True, result=new))+'\n').encode()
+        window._read_collection_responses()
+        text = window.collection_status_label.text()
+        assert 'episode53' in text and 'episode52' not in text
+        assert '报错' not in text and 'failure' not in text and 'old gap' not in text
+    finally:
+        window.close()
+        application.processEvents()

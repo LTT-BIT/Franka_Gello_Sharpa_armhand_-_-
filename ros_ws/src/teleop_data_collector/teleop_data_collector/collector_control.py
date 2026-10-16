@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import socketserver
 import threading
@@ -9,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .quality_storage import QUALITY_FOLDERS, prepare_parent, storage_roots
 from .quality_lists import DEFAULT_QUALITY_DIR, QUALITY_LABELS, save_quality
 
 
@@ -35,6 +37,7 @@ class CollectorController:
         self._worker: threading.Thread | None = None
         self._after_home: dict[str, Any] = {}
         self._home_io_lock = threading.Lock()
+        self._storage: dict[str, Any] = {}
         recorder.on_recording_stopped = self._writer_stopped
 
     def set_ready(self) -> None:
@@ -52,6 +55,7 @@ class CollectorController:
             quality = self._quality
             auto_stop_reason = self._auto_stop_reason
             after_home = dict(self._after_home)
+            storage = dict(self._storage)
         active = bool(self._recorder.active)
         current = self._recorder.current_bag_dir
         last_bag = self._recorder.last_bag_dir
@@ -68,6 +72,10 @@ class CollectorController:
             phase = "WAITING"
         return {
             "after_home": after_home,
+            "storage": storage,
+            "storage_settings": {"supported": hasattr(self._recorder, "archive_quality"),
+                "default_parent": self._default_storage_parent(), "roots": storage_roots(),
+                "folders": QUALITY_FOLDERS},
             "state": phase if busy else "RECORDING" if active else phase,
             "continuity_enabled": self._monitor is not None,
             "start_readiness": readiness,
@@ -83,23 +91,26 @@ class CollectorController:
             "last_bag": str(last_bag) if last_bag is not None else None,
             "quality": quality,
             "quality_pending": bool(last_state) and quality is None and not active and not busy,
-            "can_rate_quality": bool(last_state) and not active and phase not in {"STOPPING", "VALIDATING"},
+            "can_rate_quality": bool(last_state) and not active and phase not in {"STOPPING", "VALIDATING"} and storage.get("state") != "archiving",
             "elapsed_sec": elapsed_sec,
             "finalized": bool(last_state.get("finalized", False)),
             "failures": list(last_state.get("failures") or []),
             "boundary_warnings": list(last_state.get("boundary_warnings") or []),
             "transport_warnings": list(last_state.get("transport_warnings") or []),
             "can_start": ready and not active and not busy and not (auto_stop_reason and quality is None)
-            and (not after_home or (after_home["state"] == "done" and quality is not None)),
+            and (not after_home or (after_home["state"] == "done" and quality is not None))
+            and (not storage or (storage["state"] == "saved" and quality is not None)),
             "can_stop": active and not busy,
             "can_mark_milestone": active and phase == "RECORDING",
             "milestones": self._recorder.milestones,
             "can_discard": not active and last_bag is not None and not busy,
         }
 
-    def start(self, return_arm_home: dict | None = None) -> dict[str, Any]:
+    def start(self, return_arm_home: dict | None = None, storage_parent: str | None = None) -> dict[str, Any]:
         with self._operation_lock:
             with self._state_lock:
+                if self._storage and (self._storage["state"] != "saved" or self._quality is None):
+                    raise RuntimeError("请先完成上一段质量分类和数据归档，失败时可重新选择质量以重试")
                 if self._after_home and (self._after_home["state"] != "done" or self._quality is None):
                     raise RuntimeError("请等待机械臂 Home 完成并保存本段质量分类；Home 失败可按 B 重试")
                 if not self._ready:
@@ -119,7 +130,14 @@ class CollectorController:
                     "powder_weighing", "assembly", "bean_picking"
                 }:
                     raise ValueError("invalid arm Home task")
-            bag_dir = self._recorder.start()
+            parent = None
+            if storage_parent is not None:
+                if not isinstance(storage_parent, str) or not storage_parent.strip():
+                    raise ValueError("请选择保存父目录")
+                if not hasattr(self._recorder, "archive_quality"):
+                    raise RuntimeError("当前采集器不支持分类归档，请更新后重启")
+                parent = prepare_parent(storage_parent)
+            bag_dir = self._recorder.start(archive_parent=parent) if parent is not None else self._recorder.start()
             if self._monitor is not None:
                 self._monitor.begin(bag_dir.name, time.monotonic())
             with self._state_lock:
@@ -129,6 +147,9 @@ class CollectorController:
                 self._started_at = time.monotonic()
                 self._last_state = {}
                 self._quality = None
+                self._storage = ({"parent": str(parent), "episode": bag_dir.name,
+                    "state": "recording", "path": str(bag_dir), "message": "正在暂存录制"}
+                    if parent is not None else {})
                 self._after_home = ({"id": uuid.uuid4().hex, "episode": bag_dir.name,
                     "task": return_arm_home["task"], "owner": str(return_arm_home.get("owner", ""))[:16], "attempt": 0, "state": "armed", "message": "等待停止写盘"}
                     if return_arm_home is not None else {})
@@ -258,6 +279,8 @@ class CollectorController:
             self._last_state = state
             final_phase = str(state.get("state") or "INCOMPLETE").upper()
             self._phase = "STOPPING" if self._auto_stop_reason is not None else final_phase
+            if self._storage:
+                self._storage.update(state="pending", message="等待质量选择后归档")
         if self._auto_stop_reason is not None and bag_dir is not None:
             try:
                 self._save_quality_locked(bag_dir.name, "报错")
@@ -298,23 +321,44 @@ class CollectorController:
         self._persist_home()
         return self.status()
 
+    def _default_storage_parent(self) -> str:
+        output = getattr(self._recorder, "_output_dir", None)
+        if output is None:
+            return ""
+        root = os.environ.get("COLLECTION_HOST_DATA_ROOT")
+        if root:
+            try:
+                return str(Path(root) / output.relative_to("/collection_data"))
+            except ValueError:
+                pass
+        return str(output)
+
     def _persist_home(self) -> None:
-        # Validation owns the recorder's state file until _last_state is set.
-        # Serialize later quality/Home updates without taking the finalization lock.
+        # Home replies stay responsive during validation and serialize with
+        # rename/classification so no writer accesses the old bag location.
         with self._home_io_lock:
-            with self._state_lock:
-                home = dict(self._after_home)
-                quality = self._quality
-                complete = bool(self._last_state)
-            bag = self._recorder.last_bag_dir
-            if not home or not complete or bag is None or bag.name != home["episode"]:
-                return
-            path = bag / "collection_state.json"
-            state = json.loads(path.read_text(encoding="utf-8"))
-            state.update(after_home=home, quality=quality)
-            temporary = path.with_suffix(".home.tmp")
-            temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            temporary.replace(path)
+            self._persist_episode_unlocked()
+
+    def _persist_episode_unlocked(self) -> None:
+        with self._state_lock:
+            home = dict(self._after_home)
+            storage = dict(self._storage)
+            quality = self._quality
+            complete = bool(self._last_state)
+        bag = self._recorder.last_bag_dir
+        if not complete or bag is None or not (home or storage):
+            return
+        path = bag / "collection_state.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        state.update(after_home=home, quality=quality)
+        if storage:
+            state.update(storage=storage, source_bag=str(bag.resolve()))
+        temporary = path.with_suffix(".home.tmp")
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
 
     def discard(self) -> dict[str, Any]:
         with self._operation_lock:
@@ -335,13 +379,32 @@ class CollectorController:
             return self.status()
 
     def _save_quality_locked(self, episode: str, quality: str) -> None:
-        # Do not keep advertising an earlier rating if saving a change fails.
         with self._state_lock:
             self._quality = None
-        path = save_quality(self._quality_dir, episode, quality)
-        with self._state_lock:
-            self._quality = quality
-        self._persist_home()
+            if self._storage:
+                self._storage.update(state="archiving", message="正在归档并保存质量分类")
+        with self._home_io_lock:
+            try:
+                if self._storage:
+                    destination = self._recorder.archive_quality(Path(self._storage["parent"]), quality)
+                    with self._state_lock:
+                        self._storage.update(path=str(destination), folder=QUALITY_FOLDERS[quality])
+                path = save_quality(self._quality_dir, episode, quality)
+                with self._state_lock:
+                    self._quality = quality
+                    if self._storage:
+                        self._storage.update(state="saved", message="分类归档完成")
+                self._persist_episode_unlocked()
+            except Exception as error:
+                with self._state_lock:
+                    self._quality = None
+                    if self._storage:
+                        self._storage.update(state="failed", message=str(error))
+                try:
+                    self._persist_episode_unlocked()
+                except OSError:
+                    pass  # Preserve the original failure (e.g. disk full).
+                raise
         self._node.get_logger().info(f"数据质量已保存：{episode} → {quality} ({path})")
 
     def rate_quality(self, episode: str, quality: str) -> dict[str, Any]:
@@ -378,7 +441,7 @@ class CollectorController:
         if command == "status":
             return self.status()
         if command == "start":
-            return self.start((arguments or {}).get("return_arm_home"))
+            return self.start((arguments or {}).get("return_arm_home"), (arguments or {}).get("storage_parent"))
         if command == "stop":
             return self.request_stop() if self._monitor is not None or self._after_home else self.stop()
         if command == "discard":

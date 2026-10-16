@@ -21,6 +21,7 @@ from .collector_contract import TopicContract, recording_outcome, topic_prefligh
 from .bag_validation import inspect_bag
 from .collector_control import CollectorController, CollectorControlServer
 from .keyboard import KeyboardInterface
+from .quality_storage import allocate_episode, archive_episode
 
 
 class RosbagDataCollectorNode(Node):
@@ -159,7 +160,7 @@ class RosbagEpisodeRecorder:
             raise
         return dict(marker)
 
-    def start(self) -> Path:
+    def start(self, *, archive_parent: Path | None = None) -> Path:
         if self.active:
             raise RuntimeError("rosbag recording is already active.")
         ros2 = shutil.which("ros2")
@@ -170,13 +171,13 @@ class RosbagEpisodeRecorder:
             raise RuntimeError("Recording preflight failed: " + "; ".join(failures))
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        bag_dir = self._next_episode_dir()
+        bag_dir = self._next_episode_dir(archive_parent)
         self._milestones = []
         self._source_recording_id = uuid.uuid4().hex
         self._validation_report = {}
         self._live_continuity_report = {}
         self._last_bag_dir = bag_dir
-        self._state_path = self._output_dir / f".{bag_dir.name}.collection_state.json"
+        self._state_path = bag_dir.parent / f".{bag_dir.name}.collection_state.json"
         self._write_state(
             bag_dir,
             state="recording",
@@ -212,7 +213,6 @@ class RosbagEpisodeRecorder:
             )
         except Exception:
             self._remove_generated_qos_file()
-            self.on_recording_stopped()
             self._write_state(
                 bag_dir,
                 state="interrupted",
@@ -239,6 +239,7 @@ class RosbagEpisodeRecorder:
             self._process = None
             self._current_bag_dir = None
             self._remove_generated_qos_file()
+            self.on_recording_stopped()
             self._write_state(
                 bag_dir,
                 state="interrupted",
@@ -319,6 +320,16 @@ class RosbagEpisodeRecorder:
             )
         return bag_dir
 
+    def archive_quality(self, parent: Path, quality: str) -> Path:
+        if self._process is not None or self._current_bag_dir is not None:
+            raise RuntimeError("请等待写盘和校验完成后归档")
+        if self._last_bag_dir is None:
+            raise RuntimeError("没有可归档的数据")
+        destination = archive_episode(self._last_bag_dir, parent, quality)
+        self._last_bag_dir = destination
+        self._state_path = destination / "collection_state.json"
+        return destination
+
     def mark_discarded(self) -> Path | None:
         if self.active:
             self.stop()
@@ -382,21 +393,8 @@ class RosbagEpisodeRecorder:
         else:
             self._state_path = sidecar
 
-    def _next_episode_dir(self) -> Path:
-        pattern = re.compile(rf"^{re.escape(self._bag_prefix)}(\d+)$")
-        next_index = 0
-        for path in self._output_dir.iterdir():
-            if not path.is_dir():
-                continue
-            match = pattern.match(path.name)
-            if match:
-                next_index = max(next_index, int(match.group(1)) + 1)
-
-        while True:
-            bag_dir = self._output_dir / f"{self._bag_prefix}{next_index}"
-            if not bag_dir.exists():
-                return bag_dir
-            next_index += 1
+    def _next_episode_dir(self, archive_parent: Path | None = None) -> Path:
+        return allocate_episode(self._output_dir, self._bag_prefix, archive_parent)
 
     def _remove_generated_qos_file(self) -> None:
         qos_path = self._generated_qos_path
