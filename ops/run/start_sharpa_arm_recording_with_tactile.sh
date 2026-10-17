@@ -298,6 +298,8 @@ if [[ "$WITH_CAMERAS" == true ]]; then
 fi
 collector_name="sharpa-tactile-data-collection-$$"
 source "$REPO_ROOT/ops/lib/collection_storage.sh"
+source "$REPO_ROOT/ops/lib/collection_transfer.sh"
+collection_transfer_start
 docker compose run -d --name "$collector_name" --no-deps \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp \
@@ -339,10 +341,11 @@ trap stop_collector INT TERM
 docker logs --follow "$collector_name" &
 logs_pid=$!
 while [[ "$(docker inspect --format '{{.State.Running}}' "$collector_name")" == true ]]; do
-  sleep 0.2
+  sleep 0.2 || true
 done
 collector_status="$(docker inspect --format '{{.State.ExitCode}}' "$collector_name")"
 wait "$logs_pid" 2>/dev/null || true
+collection_transfer_drain
 trap - INT TERM
 docker rm "$collector_name" >/dev/null
 

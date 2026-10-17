@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
 import errno
 import fcntl
 import json
@@ -9,6 +10,8 @@ import os
 from pathlib import Path
 import re
 import tempfile
+
+STAGING_FOLDER = "pending"
 
 QUALITY_FOLDERS = {"优等": "A", "一般": "B", "报错": "C", "放弃": "D"}
 
@@ -31,7 +34,7 @@ def prepare_parent(value: str) -> Path:
     if (path / "metadata.yaml").exists() or (path / "collection_state.json").exists():
         raise ValueError("请选择保存父目录，不能选择已有 episode 的内部目录")
     path.mkdir(parents=True, exist_ok=True)
-    for name in [".pending", *QUALITY_FOLDERS.values()]:
+    for name in [STAGING_FOLDER, *QUALITY_FOLDERS.values()]:
         child = path / name
         if child.is_symlink():
             raise ValueError(f"归档目录不能是符号链接：{child}")
@@ -57,8 +60,10 @@ def allocate_episode(output: Path, prefix: str, parent: Path | None) -> Path:
         next_index = int(counter.read_text()) if counter.exists() else 0
         directories = [output]
         if parent is not None:
-            directories += [parent / name for name in [".pending", *QUALITY_FOLDERS.values()]]
+            directories += [parent / name for name in [STAGING_FOLDER, ".pending", *QUALITY_FOLDERS.values()]]
         for directory in directories:
+            if not directory.exists():
+                continue
             for child in directory.iterdir():
                 match = pattern.fullmatch(child.name)
                 if match and child.is_dir():
@@ -74,7 +79,7 @@ def allocate_episode(output: Path, prefix: str, parent: Path | None) -> Path:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        staging = parent / ".pending" if parent is not None else output
+        staging = parent / STAGING_FOLDER if parent is not None else output
         return staging / f"{prefix}{next_index}"
 
 
@@ -98,3 +103,11 @@ def archive_episode(source: Path, parent: Path, quality: str) -> Path:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(destination))
     return destination
+
+
+@contextmanager
+def episode_file_lock(parent: Path):
+    """Shared with host deletion workers; never held for any network IO."""
+    with (parent / ".episode-files.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield

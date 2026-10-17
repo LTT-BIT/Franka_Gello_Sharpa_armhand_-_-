@@ -486,7 +486,7 @@ def test_storage_sidebar_sends_selected_parent_and_reports_final_location(tmp_pa
         assert window.settings.value('collection_storage_parent') == str(chosen)
         # While recording, changing the next parent never changes this episode.
         frozen = dict(parent=str(chosen), episode='episode52', state='recording',
-                      path=str(chosen / '.pending' / 'episode52'))
+                      path=str(chosen / 'pending' / 'episode52'))
         window._apply_collection_status(dict(status, state='RECORDING', active=True,
                                             can_start=False, can_stop=True, storage=frozen))
         window.storage_parent_edit.setText(str(tmp_path / 'next'))
@@ -538,3 +538,32 @@ def test_finish_path_edit_restores_pedal_shortcuts(tmp_path, monkeypatch):
         assert window._send.call_args.args == ('home_arm', {'side': 'both', 'task': 'powder_weighing'})
     finally:
         window.close(); window.deleteLater(); app.processEvents()
+
+
+def test_sidebar_defaults_restore_local_remote_and_all_switches(tmp_path,monkeypatch):
+    from teleop_runtime.transfer_settings import read_settings
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG',raising=False)
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path/'qt'))
+    first=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    local=str(tmp_path/'saved');remote=str(tmp_path/'remote')
+    first.storage_parent_edit.setText(local)
+    first.storage_parent_edit.textEdited.emit(local)
+    panel=first.transfer_panel
+    panel.remote_edit.setText(remote);panel.remote_edit.textEdited.emit(remote)
+    panel.upload_checkbox.setChecked(True)
+    panel.upload_d_checkbox.setChecked(True)
+    panel.delete_checkbox.setChecked(True)
+    # Persist while still editing, without needing a recording or focus change.
+    assert read_settings()['local_parent']==local
+    assert read_settings()['remote_parent']==remote
+    first.close();app.processEvents()
+    second=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    try:
+        assert second.storage_parent_edit.text()==local
+        assert second.transfer_panel.remote_edit.text()==remote
+        assert all(widget.isChecked() for widget in (second.transfer_panel.upload_checkbox,
+            second.transfer_panel.upload_d_checkbox,second.transfer_panel.delete_checkbox))
+        assert not Path(local).exists() and not Path(remote).exists()
+    finally:
+        second.close();app.processEvents()

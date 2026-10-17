@@ -724,7 +724,7 @@ def test_quality_archiving_moves_full_bag_and_preserves_home_gate(tmp_path, monk
     parent = tmp_path / 'selected'
     controller.start({'task': 'assembly'}, storage_parent=str(parent))
     bag = recorder.current_bag_dir
-    assert bag.parent == parent / '.pending'
+    assert bag.parent == parent / 'pending'
     (bag / 'raw.mcap').write_bytes(b'raw recording')
     inode = (bag / 'raw.mcap').stat().st_ino
     controller.stop()
@@ -812,3 +812,29 @@ def test_archive_move_then_classification_failure_retries_at_new_path(tmp_path, 
     monkeypatch.setattr(collector_control, 'save_quality', real_save)
     controller.rate_quality(episode, '一般')
     assert controller.status()['can_start']
+
+
+def test_background_deletion_does_not_block_next_recording_or_recreate_bag(tmp_path, monkeypatch):
+    import shutil
+    controller, recorder, _, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    parent=tmp_path/'selected'
+    controller.start({'task':'assembly'},storage_parent=str(parent))
+    controller.stop()
+    episode=recorder.last_bag_dir.name
+    controller.rate_quality(episode,'优等')
+    home=controller.status()['after_home']
+    controller.report_home(dict(id=home['id'],attempt=0,state='done'))
+    bag=recorder.last_bag_dir
+    assert json.loads((bag/'collection_state.json').read_text())['transfer_ready']
+    shutil.rmtree(bag)  # Simulate an independently verified uploader deletion.
+    status=controller.status()
+    assert status['can_start'] and not status['can_rate_quality'] and not status['can_discard']
+    with pytest.raises(RuntimeError,match='已由后台删除'):
+        controller.rate_quality(episode,'一般')
+    with pytest.raises(RuntimeError,match='已由后台删除'):
+        controller.discard()
+    assert not bag.exists() and controller.status()['can_start']
+    controller.start({'task':'assembly'},storage_parent=str(parent))
+    assert recorder.current_bag_dir.name!=episode
+    controller.stop()

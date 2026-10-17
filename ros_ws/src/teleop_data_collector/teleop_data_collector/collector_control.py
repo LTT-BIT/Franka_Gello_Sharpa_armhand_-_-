@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 import os
 import sys
 import socketserver
@@ -10,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .quality_storage import QUALITY_FOLDERS, prepare_parent, storage_roots
+from .quality_storage import QUALITY_FOLDERS, prepare_parent, storage_roots, episode_file_lock
 from .quality_lists import DEFAULT_QUALITY_DIR, QUALITY_LABELS, save_quality
 
 
@@ -59,6 +60,7 @@ class CollectorController:
         active = bool(self._recorder.active)
         current = self._recorder.current_bag_dir
         last_bag = self._recorder.last_bag_dir
+        bag_available = last_bag is not None and last_bag.is_dir()
         elapsed_sec = (
             max(0.0, time.monotonic() - started_at)
             if active and started_at is not None
@@ -89,9 +91,10 @@ class CollectorController:
             "current_bag": str(current) if current is not None else None,
             "last_episode": last_bag.name if last_bag is not None else None,
             "last_bag": str(last_bag) if last_bag is not None else None,
+            "local_bag_available": bag_available,
             "quality": quality,
             "quality_pending": bool(last_state) and quality is None and not active and not busy,
-            "can_rate_quality": bool(last_state) and not active and phase not in {"STOPPING", "VALIDATING"} and storage.get("state") != "archiving",
+            "can_rate_quality": bool(last_state) and bag_available and not active and phase not in {"STOPPING", "VALIDATING"} and storage.get("state") != "archiving",
             "elapsed_sec": elapsed_sec,
             "finalized": bool(last_state.get("finalized", False)),
             "failures": list(last_state.get("failures") or []),
@@ -103,11 +106,11 @@ class CollectorController:
             "can_stop": active and not busy,
             "can_mark_milestone": active and phase == "RECORDING",
             "milestones": self._recorder.milestones,
-            "can_discard": not active and last_bag is not None and not busy,
+            "can_discard": not active and bag_available and not busy,
         }
 
     def start(self, return_arm_home: dict | None = None, storage_parent: str | None = None) -> dict[str, Any]:
-        with self._operation_lock:
+        with self._operation_lock, self._home_io_lock:
             with self._state_lock:
                 if self._storage and (self._storage["state"] != "saved" or self._quality is None):
                     raise RuntimeError("请先完成上一段质量分类和数据归档，失败时可重新选择质量以重试")
@@ -333,10 +336,13 @@ class CollectorController:
                 pass
         return str(output)
 
+    def _episode_file_lock(self):
+        return episode_file_lock(Path(self._storage["parent"])) if self._storage else nullcontext()
+
     def _persist_home(self) -> None:
         # Home replies stay responsive during validation and serialize with
         # rename/classification so no writer accesses the old bag location.
-        with self._home_io_lock:
+        with self._home_io_lock, self._episode_file_lock():
             self._persist_episode_unlocked()
 
     def _persist_episode_unlocked(self) -> None:
@@ -349,10 +355,15 @@ class CollectorController:
         if not complete or bag is None or not (home or storage):
             return
         path = bag / "collection_state.json"
+        if storage and not bag.is_dir():
+            return  # An independently verified transfer may have removed it.
         state = json.loads(path.read_text(encoding="utf-8"))
         state.update(after_home=home, quality=quality)
         if storage:
-            state.update(storage=storage, source_bag=str(bag.resolve()))
+            state.update(storage=storage, source_bag=str(bag.resolve()),
+                transfer_ready=storage.get("state") == "saved" and quality is not None
+                    and (not home or home.get("state") == "done")
+                    and self._phase not in {"STOPPING", "VALIDATING"})
         temporary = path.with_suffix(".home.tmp")
         with temporary.open("w", encoding="utf-8") as stream:
             stream.write(json.dumps(state, ensure_ascii=False, indent=2) + "\n")
@@ -366,7 +377,9 @@ class CollectorController:
                 self._stop_locked(interrupted=False)
             if self._recorder.last_bag_dir is None:
                 raise RuntimeError("there is no episode to discard")
-            with self._home_io_lock:
+            with self._home_io_lock, self._episode_file_lock():
+                if self._storage and not self._recorder.last_bag_dir.is_dir():
+                    raise RuntimeError("本段本地 bag 已由后台删除，不能再次改评")
                 bag_dir = self._recorder.mark_discarded()
                 state = _read_collection_state(bag_dir)
             with self._state_lock:
@@ -379,11 +392,13 @@ class CollectorController:
             return self.status()
 
     def _save_quality_locked(self, episode: str, quality: str) -> None:
-        with self._state_lock:
-            self._quality = None
-            if self._storage:
-                self._storage.update(state="archiving", message="正在归档并保存质量分类")
-        with self._home_io_lock:
+        with self._home_io_lock, self._episode_file_lock():
+            if self._storage and not self._recorder.last_bag_dir.is_dir():
+                raise RuntimeError("本段本地 bag 已由后台删除，不能再次改评")
+            with self._state_lock:
+                self._quality = None
+                if self._storage:
+                    self._storage.update(state="archiving", message="正在归档并保存质量分类")
             try:
                 if self._storage:
                     destination = self._recorder.archive_quality(Path(self._storage["parent"]), quality)
@@ -414,6 +429,8 @@ class CollectorController:
                 raise RuntimeError("请等待录制结束并完成校验后再评价")
             if bag_dir is None or bag_dir.name != episode or not self._last_state:
                 raise ValueError("数据编号已变化，请刷新后评价当前数据")
+            if self._storage and not bag_dir.is_dir():
+                raise RuntimeError("本段本地 bag 已由后台删除，不能再次改评")
             if quality not in QUALITY_LABELS:
                 raise ValueError(f"未知数据质量：{quality}")
             if self._last_state.get("auto_stop_reason") and quality not in {"报错", "放弃"}:
@@ -421,7 +438,9 @@ class CollectorController:
             if self._phase == "DISCARDED" and quality != "放弃":
                 raise ValueError("该数据已弃用，不能通过质量评价恢复")
             if quality == "放弃":
-                with self._home_io_lock:
+                with self._home_io_lock, self._episode_file_lock():
+                    if self._storage and not bag_dir.is_dir():
+                        raise RuntimeError("本段本地 bag 已由后台删除，不能再次改评")
                     self._recorder.mark_discarded()
                     state = _read_collection_state(bag_dir)
                 with self._state_lock:

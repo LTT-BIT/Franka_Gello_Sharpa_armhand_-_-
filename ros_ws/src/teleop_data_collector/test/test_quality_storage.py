@@ -22,7 +22,7 @@ def test_grades_rename_without_copy_and_reclassify(tmp_path):
 
 def test_collision_never_overwrites_even_empty_destination(tmp_path):
     parent = prepare_parent(str(tmp_path))
-    source = parent / '.pending' / 'episode0'
+    source = parent / 'pending' / 'episode0'
     source.mkdir()
     (source / 'data.mcap').write_bytes(b'bag')
     target = parent / 'A' / source.name
@@ -82,3 +82,14 @@ def test_real_rosbag_can_be_read_after_directory_archive(tmp_path):
     assert topic == '/offline_probe' and stamp == 1_000_000_000
     assert deserialize_message(data, String).data == 'offline archive check'
     assert not reader.has_next()
+
+
+def test_visible_staging_preserves_legacy_hidden_data_and_numbering(tmp_path):
+    parent=prepare_parent(str(tmp_path/'saved'))
+    assert (parent/'pending').is_dir() and not (parent/'.pending').exists()
+    legacy=parent/'.pending'/'episode91'
+    legacy.mkdir(parents=True)
+    (legacy/'bag.mcap').write_bytes(b'old interrupted recording')
+    stage=allocate_episode(tmp_path/'original','episode',parent)
+    assert stage==parent/'pending'/'episode92'
+    assert (legacy/'bag.mcap').read_bytes()==b'old interrupted recording'

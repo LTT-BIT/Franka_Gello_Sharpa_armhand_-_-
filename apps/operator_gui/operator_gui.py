@@ -48,6 +48,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from teleop_runtime.transfer_settings import read_settings as read_transfer_settings, update_settings as update_transfer_settings
+
 from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
 
 POLL_INTERVAL_MS = 500
@@ -525,6 +527,9 @@ class OperatorWindow(QMainWindow):
         column = QVBoxLayout(panel)
         self.storage_heading = QLabel("本地采集设置")
         self.storage_heading.setFont(self.system_status_heading.font())
+        heading_font = self.storage_heading.font()
+        heading_font.setBold(True)
+        self.storage_heading.setFont(heading_font)
         self.storage_heading.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         # Match the left caption and the document's first-line inset, without
         # retaining the old full-height title frame.
@@ -537,11 +542,16 @@ class OperatorWindow(QMainWindow):
         self.storage_parent_label.setFont(self.status_label.font())
         column.addWidget(self.storage_parent_label)
         row = QHBoxLayout()
-        self.storage_parent_edit = QLineEdit(str(self.settings.value("collection_storage_parent", "")))
+        try:
+            transfer_parent = read_transfer_settings()["local_parent"]
+        except (OSError, ValueError):
+            transfer_parent = ""
+        self.storage_parent_edit = QLineEdit(transfer_parent or str(self.settings.value("collection_storage_parent", "")))
         self.storage_parent_edit.setPlaceholderText("选择本机文件夹…")
         self.storage_parent_edit.setFocusPolicy(Qt.ClickFocus)
         self.storage_parent_edit.returnPressed.connect(self._finish_storage_edit)
         self.storage_parent_edit.editingFinished.connect(self._remember_storage_parent)
+        self.storage_parent_edit.textEdited.connect(self._persist_storage_parent_edit)
         self.storage_parent_edit.textChanged.connect(self._update_storage_preview)
         row.addWidget(self.storage_parent_edit, stretch=1)
         self.storage_browse_button = QPushButton("浏览…")
@@ -567,6 +577,11 @@ class OperatorWindow(QMainWindow):
         self.storage_open_button.setEnabled(False)
         self.storage_open_button.clicked.connect(self._open_episode_folder)
         column.addWidget(self.storage_open_button)
+        column.addSpacing(18)
+        from apps.operator_gui.transfer_panel import TransferPanel
+        self.transfer_panel = TransferPanel(self)
+        self.transfer_panel.local_parent_changed.connect(self._transfer_local_parent_changed)
+        column.addWidget(self.transfer_panel)
         column.addStretch(1)
         self._update_storage_preview()
         return panel
@@ -579,6 +594,16 @@ class OperatorWindow(QMainWindow):
                   for quality, folder in (("一般", "B"), ("报错", "C"), ("放弃", "D"))]
         self.storage_preview.setText("\n".join(lines))
 
+    def _persist_storage_parent_edit(self, value: str) -> None:
+        value = value.strip()
+        value = str(Path(value).expanduser()) if value else ''
+        self.settings.setValue("collection_storage_parent", value)
+        try:
+            update_transfer_settings(local_parent=value)
+        except (OSError, ValueError) as error:
+            if hasattr(self, 'transfer_panel'):
+                self.transfer_panel.status_label.setText(f'设置保存失败：{error}')
+
     def _remember_storage_parent(self) -> None:
         value = self.storage_parent_edit.text().strip()
         if value:
@@ -587,6 +612,18 @@ class OperatorWindow(QMainWindow):
         self.settings.setValue("collection_storage_parent", value)
         self.storage_parent_edit.setToolTip(value)
         self.storage_parent_edit.setCursorPosition(0)
+        try:
+            if read_transfer_settings()["local_parent"] != value:
+                update_transfer_settings(local_parent=value)
+        except (OSError, ValueError) as error:
+            self.transfer_panel.status_label.setText(f"后台监控目录设置未保存：{error}")
+
+    def _transfer_local_parent_changed(self, value: str) -> None:
+        if value and not self.storage_parent_edit.hasFocus():
+            if self.storage_parent_edit.text() != value:
+                self.storage_parent_edit.setText(value)
+                self.storage_parent_edit.setCursorPosition(0)
+            self.settings.setValue("collection_storage_parent", value)
 
     def _finish_storage_edit(self) -> None:
         self._remember_storage_parent()
@@ -610,7 +647,7 @@ class OperatorWindow(QMainWindow):
             self.storage_parent_edit.setText(settings["default_parent"])
             self._remember_storage_parent()
         storage = status.get("storage") or {}
-        self.storage_open_button.setEnabled(bool(storage.get("path")))
+        self.storage_open_button.setEnabled(bool(storage.get("path")) and status.get("local_bag_available", True))
         if storage:
             state = storage.get("state")
             label = {"recording": "录制中 · 暂存", "pending": "校验完成 · 待选择质量",
@@ -1357,10 +1394,13 @@ class OperatorWindow(QMainWindow):
         dialog.deleteLater()
 
     def closeEvent(self, event) -> None:
+        self._remember_storage_parent()
+        self.transfer_panel.save_remote()
         if self.full_config:
             from teleop_runtime.full_launcher import notify_gui_session_exit
             notify_gui_session_exit(self.full_config['token'])
         if self.hand_client:self.hand_client.close()
+        self.transfer_panel.timer.stop()
         for timer in (
             self.poll_timer,
             self.health_timer,
