@@ -1,4 +1,4 @@
-"""ROS adapter for metadata-only continuity monitoring; no hardware output."""
+"""ROS adapter for continuity monitoring and idle RGB readiness; no hardware output."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,7 +11,7 @@ from .camera_stream_health import CameraReadiness
 
 
 class LiveContinuity:
-    def __init__(self, node):
+    def __init__(self, node, *, recording_active=None):
         import yaml
         from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
         from rclpy.serialization import deserialize_message
@@ -19,7 +19,11 @@ class LiveContinuity:
 
         required = [topic for topic in node.config.topics if topic.required]
         self.monitor = ContinuityMonitor([topic.topic for topic in required])
-        self.readiness = CameraReadiness([topic.topic for topic in required])
+        self._recording_active = recording_active or (lambda: self.monitor.active)
+        self.readiness = CameraReadiness([topic.topic for topic in required],
+            rgb_enabled=getattr(node.config, 'rgb_preflight_enabled', False),
+            rgb_threshold=getattr(node.config, 'rgb_brightness_threshold', 25.),
+            rgb_stable_sec=getattr(node.config, 'rgb_preflight_stable_sec', 3.))
         self._subscriptions = []
         self._stop = threading.Event()
         self._thread = None
@@ -31,6 +35,8 @@ class LiveContinuity:
             elif arg.startswith("--qos-profile-overrides-path="):
                 overrides = yaml.safe_load(Path(arg.split("=", 1)[1]).read_text()) or {}
         for topic in required:
+            if not getattr(node.config, 'continuity_enabled', True) and not self.readiness.observes(topic.topic):
+                continue
             profile = overrides.get(topic.topic, node.rosbag_record_default_qos)
             qos = QoSProfile(
                 depth=int(profile.get("depth", 10)),
@@ -45,6 +51,9 @@ class LiveContinuity:
                 if not self.monitor.active and not camera:
                     return
                 now = time.monotonic()
+                recording = self._recording_active()
+                if camera:
+                    self.readiness.set_brightness_paused(recording)
                 try:
                     if item.type_name == "sensor_msgs/msg/Image":
                         message = read_image_metadata(serialized)
@@ -56,7 +65,15 @@ class LiveContinuity:
                         stamp = message.header.stamp
                         header_ns = int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
                     if camera:
-                        self.readiness.observe(item.topic, header_ns, now)
+                        brightness = brightness_error = None
+                        if not recording and self.readiness.checks_brightness(item.topic):
+                            from .rgb_brightness import mean_rgb
+                            try:
+                                brightness = mean_rgb(message)
+                            except ValueError as error:
+                                brightness_error = str(error)
+                        self.readiness.observe(item.topic, header_ns, now,
+                            brightness=brightness, brightness_error=brightness_error)
                     if self.monitor.active:
                         self.monitor.observe_message(item.topic, message, header_ns, now)
                 except Exception as error:

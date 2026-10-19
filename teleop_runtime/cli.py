@@ -366,6 +366,7 @@ def main() -> None:
     )
 
     ui = OperatorConsole()
+    ui.set_arm_available(False, "机械臂不可用：等待新鲜状态，请检查连接、Exec 模式及 FCI")
     server = OperatorControlServer((args.control_host, args.control_port), ui)
     server.start()
     print(

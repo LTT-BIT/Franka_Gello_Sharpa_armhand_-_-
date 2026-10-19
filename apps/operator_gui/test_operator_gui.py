@@ -564,6 +564,29 @@ def test_continuity_alerts_are_nonmodal_deduplicated_and_pedal_can_restart():
         window.close()
 
 
+def test_rgb_preflight_reason_disables_start_and_recovers(tmp_path):
+    from apps.operator_gui.operator_gui import QualityDialog
+    application = QApplication.instance() or QApplication([])
+    QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, str(tmp_path))
+    reason = '录制前亮度检查：/cam0/color/image_raw：平均像素值 7.0 < 25/255'
+    window = OperatorWindow('127.0.0.1', _unused_port())
+    try:
+        window._apply_collection_status(dict(state='WAITING', active=False, can_start=False,
+            start_readiness=dict(ready=False, message=reason)))
+        assert reason in window.collection_status_label.text()
+        assert not window.collection_record_button.isEnabled()
+        window._apply_collection_status(dict(state='READY', active=False, can_start=True,
+            start_readiness=dict(ready=True, message='')))
+        assert reason not in window.collection_status_label.text()
+        assert window.collection_record_button.isEnabled()
+        dialog = QualityDialog(dict(state='FINALIZED', last_episode='episode158', can_rate_quality=True))
+        assert dialog.buttons['优等'].isEnabled() and dialog.buttons['一般'].isEnabled()
+        dialog.close()
+    finally:
+        window.close()
+        application.processEvents()
+
+
 def test_auto_failure_quality_dialog_only_allows_error_or_discard():
     from apps.operator_gui.operator_gui import QualityDialog
     application = QApplication.instance() or QApplication([])

@@ -25,6 +25,9 @@ class CollectorConfig:
     trim_end_sec: float
     provenance: dict[str, Any]
     continuity_enabled: bool = False
+    rgb_preflight_enabled: bool = False
+    rgb_brightness_threshold: float = 25.0
+    rgb_preflight_stable_sec: float = 3.0
 
 
 def load_collector_config(node: Node) -> CollectorConfig:
@@ -37,7 +40,13 @@ def load_collector_config(node: Node) -> CollectorConfig:
     trim_end_sec = _get_nonnegative_float(node, "trim_end_sec", 0.0)
 
     continuity_enabled = _coerce_bool(_get_or_declare(node, "continuity_enabled", False), False)
+    rgb_enabled = _coerce_bool(_get_or_declare(node, "rgb_preflight_enabled", False), False)
+    rgb_threshold = _get_nonnegative_float(node, "rgb_brightness_threshold", 25.0)
+    rgb_duration = _get_nonnegative_float(node, "rgb_preflight_stable_sec", 3.0)
+    from .rgb_brightness import validate_policy
+    validate_policy(rgb_threshold, rgb_duration)
     provenance = {
+        "rgb_preflight_policy": dict(enabled=rgb_enabled, threshold=rgb_threshold, stable_sec=rgb_duration),
         "continuity_enabled": continuity_enabled,
         "bag_contract_version": _get_or_declare(node, "bag_contract_version", 1),
         "teleoperator": _get_required_string(node, "teleoperator", ""),
@@ -70,6 +79,9 @@ def load_collector_config(node: Node) -> CollectorConfig:
         trim_end_sec=trim_end_sec,
         provenance=provenance,
         continuity_enabled=continuity_enabled,
+        rgb_preflight_enabled=rgb_enabled,
+        rgb_brightness_threshold=rgb_threshold,
+        rgb_preflight_stable_sec=rgb_duration,
     )
 
 

@@ -16,6 +16,7 @@ import json
 import sys
 import time
 import os
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -50,7 +52,8 @@ from PySide6.QtWidgets import (
 
 from teleop_runtime.transfer_settings import read_settings as read_transfer_settings, update_settings as update_transfer_settings
 
-from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
+from operator_tasks import (DEFAULT_OPERATOR_TASK, get_operator_tasks, task_label,
+                            add_operator_task, delete_operator_task)
 
 POLL_INTERVAL_MS = 500
 RECONNECT_INTERVAL_MS = 2000
@@ -175,6 +178,7 @@ class QualityDialog(QDialog):
 
 
 class OperatorWindow(QMainWindow):
+    task_edit_finished = Signal(str, str, str)
     def __init__(
         self,
         host: str | None,
@@ -183,6 +187,8 @@ class OperatorWindow(QMainWindow):
         collection_port: int | None = None,
     ) -> None:
         super().__init__()
+        self.task_edit_pending=False
+        self.task_edit_finished.connect(self._task_edit_completed)
         self.hand_client=None;self.hand_status={};self.hand_events=[];self.full_config=None
         if os.environ.get('TELEOP_FULL_CONFIG'):
             self.full_config=json.loads(Path(os.environ['TELEOP_FULL_CONFIG']).read_text())
@@ -268,6 +274,10 @@ class OperatorWindow(QMainWindow):
         self.connect_action.setShortcut("Ctrl+K")
         self.connect_action.triggered.connect(self._open_connection_dialog)
         connection_menu.addAction(self.connect_action)
+        if self.full_config:
+            self.arm_reconnect_action = QAction("重新连接机械臂（修复连接 / Exec / FCI 后）", self)
+            self.arm_reconnect_action.triggered.connect(self._reconnect_arms)
+            connection_menu.addAction(self.arm_reconnect_action)
         connection_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -414,7 +424,9 @@ class OperatorWindow(QMainWindow):
             self._button("Open both hands", "open_hand", {"side": "both"})
         )
         self.task_selector = QComboBox()
-        for task, label in OPERATOR_TASKS.items():
+        self.task_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.task_selector.setMinimumContentsLength(6)
+        for task, label in get_operator_tasks().items():
             self.task_selector.addItem(label, task)
         saved_task = str(self.settings.value("operator_task", DEFAULT_OPERATOR_TASK))
         selected_index = self.task_selector.findData(saved_task)
@@ -423,8 +435,13 @@ class OperatorWindow(QMainWindow):
             lambda: self.settings.setValue("operator_task", self._selected_task())
         )
         self.task_selector.setToolTip("Select which task Home pose and trajectory to use")
+        self.task_selector.addItem("＋ 新增任务…", "__add_task__")
+        self.task_selector.addItem("－ 删除当前任务…", "__delete_task__")
+        self.task_selector.activated.connect(self._task_action_selected)
+        self.current_task = str(self.task_selector.currentData())
         actions.addWidget(self.task_selector)
         home_both = QPushButton("Home both arms")
+        self.home_both_button = home_both
         home_both.setFocusPolicy(Qt.NoFocus)
         home_both.clicked.connect(
             lambda: self._shortcut_home("both")
@@ -441,7 +458,8 @@ class OperatorWindow(QMainWindow):
         self.capture_ready_button.clicked.connect(self._confirm_capture_ready)
         self.action_buttons.append(self.capture_ready_button)
         ready_layout.addWidget(self.capture_ready_button)
-        ready_layout.addWidget(self._button("Move both arms to Ready", "move_ready"))
+        self.move_ready_button=self._button("Move both arms to Ready", "move_ready")
+        ready_layout.addWidget(self.move_ready_button)
         self.ready_to_home_button = QPushButton("Ready to Home")
         self.ready_to_home_button.setFocusPolicy(Qt.NoFocus)
         self.ready_to_home_button.clicked.connect(
@@ -675,7 +693,7 @@ class OperatorWindow(QMainWindow):
         message = QMessageBox(self)
         self.capture_dialogs[side] = message
         message.setIcon(QMessageBox.Warning)
-        task_label = OPERATOR_TASKS[self._selected_task()]
+        task_label = self.task_selector.currentText()
         message.setWindowTitle(f"Replace {side} arm {task_label} Home?")
         message.setText(
             f"Record the {side} arm's current measured joint angles as the "
@@ -716,7 +734,100 @@ class OperatorWindow(QMainWindow):
         )
 
     def _selected_task(self) -> str:
-        return str(self.task_selector.currentData())
+        task=str(self.task_selector.currentData())
+        if task.startswith('__'):
+            return getattr(self, 'current_task', DEFAULT_OPERATOR_TASK)
+        self.current_task=task
+        return task
+
+    def _task_edit_allowed(self) -> bool:
+        home=self.collection_status.get('after_home') or {}
+        return (not self.task_edit_pending and not getattr(self,'arm_home_locked',False)
+                and self.collection_state not in {'RECORDING','STOPPING','VALIDATING'}
+                and home.get('state') not in {'armed','pending','running','failed'}
+                and not any(button.isChecked() for button in self.arm_engage_buttons.values())
+                and not any(button.isChecked() for button in self.arm_hold_buttons.values()))
+
+    def _reload_task_selector(self, selected: str | None = None) -> None:
+        tasks=get_operator_tasks()
+        selected=selected if selected in tasks else next(iter(tasks))
+        self.task_selector.blockSignals(True)
+        self.task_selector.clear()
+        for task,label in tasks.items():self.task_selector.addItem(label,task)
+        self.task_selector.addItem('＋ 新增任务…','__add_task__')
+        self.task_selector.addItem('－ 删除当前任务…','__delete_task__')
+        self.task_selector.setCurrentIndex(self.task_selector.findData(selected))
+        self.task_selector.blockSignals(False)
+        self.current_task=selected
+        self.settings.setValue('operator_task',selected)
+
+    def _task_action_selected(self, index: int) -> None:
+        action=str(self.task_selector.itemData(index))
+        if not action.startswith('__'):
+            self.current_task=action
+            return
+        selected=self.current_task
+        self._reload_task_selector(selected)
+        if not self._task_edit_allowed():
+            self.feedback.appendPlainText('请先停止臂使能、完成本段录制和 Home 后再增删任务。')
+            return
+        if action=='__add_task__':
+            name,ok=QInputDialog.getText(self,'新增任务','任务名称（新任务需要分别记录左右臂 Home）：')
+            if not ok or not self._task_edit_allowed():return
+            self._begin_task_edit('add',name)
+        else:
+            message=QMessageBox(self)
+            message.setWindowTitle('永久删除当前任务')
+            message.setText('永久删除任务“'+task_label(selected)+'”？')
+            message.setInformativeText('将同时永久删除该任务的左右臂 Home 和对应的 Ready-to-Home 轨迹，无法通过本界面恢复。其他任务、共用 Ready 和已录制 episode 不受影响。')
+            message.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
+            message.setDefaultButton(QMessageBox.No)
+            message.finished.connect(lambda result, task=selected: self._delete_task_confirmed(task,result))
+            message.open()
+            self.task_delete_dialog=message
+
+    def _delete_task_confirmed(self, task: str, result: int) -> None:
+        if result!=QMessageBox.Yes or not self._task_edit_allowed():return
+        self._begin_task_edit('delete',task)
+
+    def _begin_task_edit(self, action: str, value: str) -> None:
+        self.task_edit_pending=True
+        self.task_selector.setEnabled(False)
+        for button in [*self.arm_engage_buttons.values(),*self.arm_hold_buttons.values(),
+                       *self.capture_home_buttons.values(),self.home_both_button,self.capture_ready_button,
+                       self.move_ready_button,self.ready_to_home_button,*self.preset_buttons.values()]:
+            button.setEnabled(False)
+        if self.collection_state!='RECORDING':self.collection_record_button.setEnabled(False)
+        self.feedback.appendPlainText('正在保存任务…' if action=='add' else '正在永久删除任务、Home 和对应轨迹…')
+        def worker():
+            result='';error=''
+            try:
+                if action=='add':result=add_operator_task(value)
+                else:delete_operator_task(value)
+            except Exception as exception:
+                error=str(exception)
+            try:self.task_edit_finished.emit(action,result,error)
+            except RuntimeError:pass  # Window already closed; metadata cleanup can finish independently.
+        threading.Thread(target=worker,name='operator-task-files',daemon=True).start()
+
+    def _task_edit_completed(self, action: str, result: str, error: str) -> None:
+        self.task_edit_pending=False
+        if error:
+            self.feedback.appendPlainText(('删除未完成，可再次删除以重试清理：' if action=='delete' else '新增任务失败：')+error)
+        else:
+            self._reload_task_selector(result or None)
+            self.feedback.appendPlainText('任务已保存，请分别记录左右臂 Home。' if action=='add' else '任务及其 Home、对应轨迹已永久删除。')
+        self.task_selector.setEnabled(not getattr(self,'arm_home_locked',False))
+        self._poll_status()
+        self._poll_collection_status()
+
+    def _reconnect_arms(self) -> None:
+        if not self.full_config or getattr(self,'arms_available',True):
+            self.feedback.appendPlainText('机械臂已就绪或状态尚未确认，无需重连。')
+            return
+        from teleop_runtime.full_launcher import notify_full_session
+        sent=notify_full_session(self.full_config['token'],command='reconnect_arms')
+        self.feedback.appendPlainText('已请求重连机械臂；就绪后仍需手动使能。' if sent else '重连请求失败，请检查统一启动入口。')
 
     def _confirm_capture_ready(self) -> None:
         if self.ready_capture_dialog is not None:
@@ -918,14 +1029,14 @@ class OperatorWindow(QMainWindow):
         for button in getattr(self, "action_buttons", []):
             button.setEnabled(ready)
         for side, button in self.arm_engage_buttons.items():
-            button.setEnabled(ready)
+            button.setEnabled(ready and not self.task_edit_pending)
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
                 button.setText("Start arm")
                 button.blockSignals(False)
         for side, button in self.arm_hold_buttons.items():
-            button.setEnabled(ready)
+            button.setEnabled(ready and not self.task_edit_pending)
             if not ready:
                 button.blockSignals(True)
                 button.setChecked(False)
@@ -933,7 +1044,7 @@ class OperatorWindow(QMainWindow):
                 button.setText(f"Hold arm ({key_hint})")
                 button.blockSignals(False)
         for button in getattr(self, "capture_home_buttons", {}).values():
-            button.setEnabled(ready)
+            button.setEnabled(ready and not self.task_edit_pending)
         for side, button in self.hand_engage_buttons.items():
             if self.hand_client is not None:continue
             button.setEnabled(ready)
@@ -942,9 +1053,13 @@ class OperatorWindow(QMainWindow):
                 button.setChecked(False)
                 button.setText("Start hand")
                 button.blockSignals(False)
+        if self.task_edit_pending:
+            for button in [self.home_both_button,self.capture_ready_button,self.move_ready_button,
+                           self.ready_to_home_button,*self.preset_buttons.values()]:
+                button.setEnabled(False)
         if self.hand_client is not None:self._apply_hand_status(self.hand_status)
         self.connect_action.setEnabled(state != "connected")
-        self.task_selector.setEnabled(ready)
+        self.task_selector.setEnabled(not getattr(self,"arm_home_locked",False) and not self.task_edit_pending)
         if state == "disconnected":
             self.status_label.setPlainText(
                 "DISCONNECTED — backend status unavailable"
@@ -997,6 +1112,10 @@ class OperatorWindow(QMainWindow):
         )
 
     def _send(self, command: str, arguments=None) -> None:
+        if self.task_edit_pending and command in {'engage','engage_arm','hold_arm','home_arm',
+                'capture_home','capture_ready','move_ready','ready_to_home','run_preset'}:
+            self.feedback.appendPlainText('任务文件处理中，请完成后再操作机械臂。')
+            return
         if self.hand_client:
             if command in ('engage_hand','disengage_hand','open_hand'):
                 self.hand_client.request(command,arguments)
@@ -1286,7 +1405,7 @@ class OperatorWindow(QMainWindow):
         else:
             style = "color: #777; font-weight: bold;"
         self.collection_status_label.setStyleSheet(style)
-        can_start = bool(status.get("can_start")) and not getattr(self, "arm_home_locked", False)
+        can_start = bool(status.get("can_start")) and not getattr(self, "arm_home_locked", False) and not self.task_edit_pending
         if (status.get("storage_settings") or {}).get("supported") and not self.storage_parent_edit.text().strip():
             can_start = False
         can_stop = bool(status.get("can_stop"))
@@ -1419,6 +1538,7 @@ class OperatorWindow(QMainWindow):
         if self.connection_state != "connected":
             self._set_connection_state("connected")
         self.status_label.setPlainText(str(status.get("status_line", "-")))
+        self.arms_available = bool(status.get("arm_available", True))
         active = status.get("active", {})
         authorized = status.get("arm_authorized", active)
         home_locked = bool(status.get("home_locked", False))
@@ -1434,16 +1554,16 @@ class OperatorWindow(QMainWindow):
                 "Arm running"
                 if engaged and active.get(side)
                 else "Arm enabled (Hold)" if engaged
-                else "Start arm"
+                else "Start arm" if self.arms_available else "Arm unavailable [连接 / Exec / FCI]"
             )
-            button.setEnabled(not home_locked)
+            button.setEnabled(self.arms_available and not home_locked and not self.task_edit_pending)
             button.blockSignals(False)
         for side, button in self.arm_hold_buttons.items():
             held = bool(arm_hold.get(side))
             key_hint = ARM_HOLD_KEY_HINTS[side]
             button.blockSignals(True)
             button.setChecked(held)
-            button.setEnabled(not home_locked)
+            button.setEnabled(self.arms_available and not home_locked and not self.task_edit_pending)
             button.setText(
                 f"Release Hold ({key_hint})"
                 if held
@@ -1464,7 +1584,7 @@ class OperatorWindow(QMainWindow):
             button.blockSignals(False)
         for side, button in self.capture_home_buttons.items():
             button.setEnabled(
-                not home_locked
+                self.arms_available and not home_locked and not self.task_edit_pending
                 and not self.arm_engage_buttons[side].isChecked()
                 and not self.arm_hold_buttons[side].isChecked()
             )
@@ -1473,7 +1593,11 @@ class OperatorWindow(QMainWindow):
         ) and not any(
             button.isChecked() for button in self.arm_hold_buttons.values()
         )
-        self.capture_ready_button.setEnabled(both_stopped and not home_locked)
+        self.capture_ready_button.setEnabled(self.arms_available and both_stopped and not home_locked and not self.task_edit_pending)
+        for button in [self.home_both_button,self.move_ready_button,self.ready_to_home_button,*self.preset_buttons.values()]:
+            button.setEnabled(self.arms_available and not home_locked and not self.task_edit_pending)
+        # Task setup remains available while arms are offline.
+        self.task_selector.setEnabled(not home_locked and not self.task_edit_pending)
         feedback = status.get("feedback", [])
         # Re-render the ring wholesale: the server caps it at 50 lines, so
         # replacing the text is the simplest correct display.

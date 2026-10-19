@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import nullcontext
 import os
 import sys
@@ -129,9 +130,11 @@ class CollectorController:
                 if not readiness["ready"]:
                     raise RuntimeError(readiness["message"])
             if return_arm_home is not None:
-                if not isinstance(return_arm_home, dict) or return_arm_home.get("task") not in {
-                    "powder_weighing", "assembly", "bean_picking"
-                }:
+                if not isinstance(return_arm_home, dict) or not (
+                    return_arm_home.get("task") in {"powder_weighing", "assembly", "bean_picking"}
+                    or isinstance(return_arm_home.get("task"), str)
+                    and re.fullmatch(r"task_[0-9a-f]{32}", return_arm_home["task"])
+                ):
                     raise ValueError("invalid arm Home task")
             parent = None
             if storage_parent is not None:

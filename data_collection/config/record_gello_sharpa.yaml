@@ -1,5 +1,8 @@
 teleop_data_collector:
   ros__parameters:
+    rgb_preflight_enabled: true
+    rgb_brightness_threshold: 25.0
+    rgb_preflight_stable_sec: 3.0
     bag_contract_version: 1
     teleoperator: gello
     workcell_id: gello-dual-fr3-sharpa

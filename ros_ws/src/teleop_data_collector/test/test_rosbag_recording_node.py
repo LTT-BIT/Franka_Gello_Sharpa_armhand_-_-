@@ -838,3 +838,52 @@ def test_background_deletion_does_not_block_next_recording_or_recreate_bag(tmp_p
     controller.start({'task':'assembly'},storage_parent=str(parent))
     assert recorder.current_bag_dir.name!=episode
     controller.stop()
+
+
+def test_node_postflight_does_not_apply_rgb_preflight_policy(monkeypatch):
+    config = SimpleNamespace(topics=(), trim_start_sec=1., trim_end_sec=.2, continuity_enabled=True,
+        rgb_preflight_enabled=True, rgb_brightness_threshold=25., rgb_preflight_stable_sec=3.)
+    received = {}
+    def inspect(path, topics, **kwargs):
+        received.update(kwargs)
+        return (), {}
+    monkeypatch.setattr(rosbag_recording_node, 'inspect_bag', inspect)
+    rosbag_recording_node.RosbagDataCollectorNode.postflight(SimpleNamespace(config=config), Path('fake'))
+    assert not any(key.startswith('rgb') for key in received)
+
+
+def test_rgb_preflight_blocks_start_before_allocating_new_episode(tmp_path, monkeypatch):
+    from teleop_data_collector.camera_stream_health import CameraReadiness
+    controller, recorder, _, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    previous = recorder.last_bag_dir
+    topic = '/cam1/color/image_raw'
+    gate = CameraReadiness([topic], rgb_enabled=True)
+    controller._readiness = gate
+    clock = [0.]
+    monkeypatch.setattr('teleop_data_collector.collector_control.time.monotonic', lambda: clock[0])
+    for i in range(101):
+        clock[0] = i/30
+        gate.observe(topic, 10**9+round(clock[0]*10**9), clock[0], brightness=24)
+    assert not controller.status()['can_start']
+    with pytest.raises(RuntimeError, match='亮度'):
+        controller.start(storage_parent=str(tmp_path/'selected'))
+    assert recorder.last_bag_dir == previous
+    for i in range(101, 203):
+        clock[0] = i/30
+        gate.observe(topic, 10**9+round(clock[0]*10**9), clock[0], brightness=25)
+    assert controller.status()['can_start']
+    controller.start(storage_parent=str(tmp_path/'selected'))
+    controller.stop()
+
+
+def test_custom_task_id_preserved_for_episode_home(tmp_path,monkeypatch):
+    controller, recorder, monitor, _, _ = _monitored_controller(tmp_path, monkeypatch)
+    controller.stop()
+    task='task_'+'a'*32
+    controller.start({'task':task,'owner':'test-gui'})
+    controller.stop()
+    home=controller.status()['after_home']
+    assert home['task']==task and home['state']=='pending'
+    state=json.loads((recorder.last_bag_dir/'collection_state.json').read_text())
+    assert state['after_home']['task']==task

@@ -22,28 +22,49 @@ CAMERA_STREAMS = (
 class CameraReadiness:
     """Continuously maintained pre-episode gate; never relaxes episode checks."""
 
-    def __init__(self, topics: list[str]):
+    def __init__(self, topics: list[str], *, rgb_enabled=False, rgb_threshold=25.0, rgb_stable_sec=3.0):
         frequencies = dict(CAMERA_STREAMS)
         self._windows = {topic: StreamWindow(topic, frequencies[topic], require_source_timestamps=True)
                          for topic in topics if topic in frequencies}
+        from teleop_core.contract import CAMERA_COLOR_TOPIC
+        from .rgb_brightness import RgbReadiness
+        colors = {CAMERA_COLOR_TOPIC.format(index=index) for index in range(3)}
+        self._rgb = RgbReadiness([topic for topic in self._windows if topic in colors],
+                                 threshold=rgb_threshold, stable_sec=rgb_stable_sec) if rgb_enabled else None
         self._lock = threading.Lock()
 
     def observes(self, topic: str) -> bool:
         return topic in self._windows
 
-    def observe(self, topic: str, header_ns: int | None, now: float) -> None:
+    def checks_brightness(self, topic: str) -> bool:
+        return self._rgb is not None and topic in self._rgb.topics
+
+    def set_brightness_paused(self, paused: bool) -> None:
+        with self._lock:
+            if self._rgb is not None:
+                self._rgb.set_paused(paused)
+
+    def observe(self, topic: str, header_ns: int | None, now: float, *, brightness=None, brightness_error=None) -> None:
         with self._lock:
             self._windows[topic].observe(now, max_gap_sec=DEFAULT_MAX_GAP_MS / 1000,
                                          header_ns=header_ns)
+            if self._rgb is not None:
+                self._rgb.observe(topic, header_ns, now, brightness, brightness_error)
 
     def snapshot(self, now: float) -> dict[str, Any]:
         with self._lock:
             waiting = [topic for topic, window in self._windows.items()
                        if not window.ready(now, stable_sec=DEFAULT_STABLE_SEC,
                                            max_gap_sec=DEFAULT_MAX_GAP_MS / 1000)]
-            return {"ready": not waiting, "waiting_topics": waiting,
+            result = {"ready": not waiting, "waiting_topics": waiting,
                     "stable_sec": DEFAULT_STABLE_SEC, "max_receive_gap_ms": DEFAULT_MAX_GAP_MS,
                     "message": (f"等待相机连续稳定 {DEFAULT_STABLE_SEC:g} 秒：" + ", ".join(waiting)) if waiting else ""}
+            if self._rgb is not None:
+                rgb = self._rgb.snapshot(now)
+                result['rgb_brightness'] = rgb
+                result['ready'] = result['ready'] and rgb['ready']
+                result['message'] = ' · '.join(text for text in (result['message'], rgb['message']) if text)
+            return result
 
 
 @dataclass

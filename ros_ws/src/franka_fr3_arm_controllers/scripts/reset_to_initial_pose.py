@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import math
+import sys
+from pathlib import Path
 import os
 import tempfile
 import threading
@@ -24,12 +26,14 @@ from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 
+# The mounted repository supplies the same ROS-free registry implementation as GUI.
+_REPOSITORY = Path(__file__).resolve().parents[4]
+if str(_REPOSITORY) not in sys.path:sys.path.insert(0,str(_REPOSITORY))
+from operator_tasks import (OPERATOR_TASKS, get_operator_tasks, valid_task_id,
+                            deleted_operator_tasks, task_registry_lock)
+
 SIDES = ("left", "right")
-TASKS = {
-    "powder_weighing": "粉末称量",
-    "assembly": "装配",
-    "bean_picking": "夹豆",
-}
+TASKS = dict(OPERATOR_TASKS)
 DEFAULT_TASK = "powder_weighing"
 JOINT_COUNT = 7
 STATE_MAX_AGE = 0.5
@@ -119,7 +123,7 @@ def operator_pose_document(tasks, ready):
         "updated_utc": datetime.now(timezone.utc).isoformat(),
         "tasks": {
             task: {
-                "label": TASKS[task],
+                "label": TASKS.get(task,task),
                 "home": {
                     side: (
                         None
@@ -129,7 +133,7 @@ def operator_pose_document(tasks, ready):
                     for side in SIDES
                 },
             }
-            for task in TASKS
+            for task in tasks
         },
         "ready": (
             None
@@ -140,6 +144,15 @@ def operator_pose_document(tasks, ready):
 
 
 def write_operator_poses(path, tasks, ready):
+    registry=Path(path).with_name('tasks.json')
+    with task_registry_lock(registry):
+        deleted=deleted_operator_tasks(registry)
+        # Old in-memory snapshots must never resurrect permanently deleted Home.
+        tasks={task:poses for task,poses in tasks.items() if task not in deleted}
+        _write_operator_poses(path,tasks,ready)
+
+
+def _write_operator_poses(path, tasks, ready):
     directory = os.path.dirname(os.path.realpath(path))
     os.makedirs(directory, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
@@ -147,8 +160,15 @@ def write_operator_poses(path, tasks, ready):
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            document=operator_pose_document(tasks, ready)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as previous:
+                    old=yaml.safe_load(previous) or {}
+                for task, entry in document["tasks"].items():
+                    if task not in TASKS:
+                        entry["label"]=(old.get("tasks",{}).get(task,{}) or {}).get("label",task)
             yaml.safe_dump(
-                operator_pose_document(tasks, ready),
+                document,
                 stream,
                 allow_unicode=True,
                 sort_keys=False,
@@ -182,11 +202,13 @@ def load_operator_poses(path, legacy_targets):
     if not isinstance(root, dict) or root.get("version") != 1:
         raise ValueError("Invalid operator pose document version")
     configured = root.get("tasks")
-    if not isinstance(configured, dict) or set(configured) != set(TASKS):
-        raise ValueError("Operator pose document must contain all configured tasks")
+    if not isinstance(configured, dict) or any(not valid_task_id(key) for key in configured):
+        raise ValueError("Operator pose document contains invalid tasks")
     tasks = {}
-    for task in TASKS:
-        entry = configured[task]
+    deleted=deleted_operator_tasks(Path(path).with_name("tasks.json"))
+    for task in dict.fromkeys([*configured, *TASKS]):
+        if task in deleted:continue
+        entry = configured.get(task, {"home": {side: None for side in SIDES}})
         if not isinstance(entry, dict):
             raise ValueError(f"Invalid operator task: {task}")
         tasks[task] = _validate_pose_mapping(
@@ -366,6 +388,8 @@ class InitialPoseReset(Node):
         self.targets = targets
         self.operator_config_path = os.path.realpath(operator_config_path)
         self.trajectory_root = os.path.realpath(trajectory_root)
+        self.task_registry_path=Path(self.operator_config_path).with_name("tasks.json")
+        TASKS.clear();TASKS.update(get_operator_tasks(self.task_registry_path))
         self.task_targets, self.ready_target = load_operator_poses(
             self.operator_config_path, targets
         )
@@ -390,40 +414,10 @@ class InitialPoseReset(Node):
             self.command_publishers[side] = self.create_publisher(
                 JointState, f"/{side}/gello/joint_states", 10
             )
-        for task in TASKS:
-            self.create_service(
-                Trigger,
-                f"/reset_to_home/{task}",
-                lambda request, response, selected=task: self._reset_home(
-                    request, response, selected
-                ),
-                callback_group=callbacks,
-            )
-            self.create_service(
-                Trigger,
-                f"/ready_to_home/{task}",
-                lambda request, response, selected=task: self._ready_to_home(
-                    request, response, selected
-                ),
-                callback_group=callbacks,
-            )
-            for side in SIDES:
-                self.create_service(
-                    Trigger,
-                    f"/reset_to_home/{task}/{side}",
-                    lambda request, response, selected_task=task, selected_side=side: self._reset_home(
-                        request, response, selected_task, sides=(selected_side,)
-                    ),
-                    callback_group=callbacks,
-                )
-                self.create_service(
-                    Trigger,
-                    f"/capture_home/{task}/{side}",
-                    lambda request, response, selected_task=task, selected_side=side: self._capture_task_home(
-                        request, response, selected_task, selected_side
-                    ),
-                    callback_group=callbacks,
-                )
+        self.task_callbacks=callbacks
+        self.registered_tasks=set()
+        self._register_task_services(TASKS)
+        self.task_timer=self.create_timer(1.0,self._refresh_tasks,callback_group=callbacks)
         self.create_service(
             Trigger,
             "/reset_to_ready",
@@ -630,7 +624,73 @@ class InitialPoseReset(Node):
     def _reset(self, _request, response, sides=SIDES):
         return self._run_target_reset(response, self.targets, "Initial pose", sides)
 
+    def _register_task_services(self, tasks):
+        for task in tasks:
+            if task in self.registered_tasks:continue
+            self.registered_tasks.add(task)
+            self.create_service(
+                Trigger,
+                f"/reset_to_home/{task}",
+                lambda request, response, selected=task: self._reset_home(
+                    request, response, selected
+                ),
+                callback_group=self.task_callbacks,
+            )
+            self.create_service(
+                Trigger,
+                f"/ready_to_home/{task}",
+                lambda request, response, selected=task: self._ready_to_home(
+                    request, response, selected
+                ),
+                callback_group=self.task_callbacks,
+            )
+            for side in SIDES:
+                self.create_service(
+                    Trigger,
+                    f"/reset_to_home/{task}/{side}",
+                    lambda request, response, selected_task=task, selected_side=side: self._reset_home(
+                        request, response, selected_task, sides=(selected_side,)
+                    ),
+                    callback_group=self.task_callbacks,
+                )
+                self.create_service(
+                    Trigger,
+                    f"/capture_home/{task}/{side}",
+                    lambda request, response, selected_task=task, selected_side=side: self._capture_task_home(
+                        request, response, selected_task, selected_side
+                    ),
+                    callback_group=self.task_callbacks,
+                )
+
+    def _refresh_tasks(self):
+        if not self.lock.acquire(blocking=False):return
+        try:
+            tasks=get_operator_tasks(self.task_registry_path)
+            deleted=deleted_operator_tasks(self.task_registry_path)
+            for task in deleted:self.task_targets.pop(task,None)
+            if tasks==TASKS:return
+            TASKS.clear();TASKS.update(tasks)
+            for task in tasks:self.task_targets.setdefault(task,{side:None for side in SIDES})
+            self._register_task_services(tasks)
+        except (OSError,ValueError) as error:
+            self.get_logger().error('任务配置读取失败：'+str(error))
+        finally:
+            self.lock.release()
+
+    def _task_available(self, task, response):
+        # Check on each request as well as timer refresh, so a removed task is
+        # never executable through a still-registered ROS service.
+        try:
+            tasks=get_operator_tasks(getattr(self,'task_registry_path',None))
+            if task not in tasks:raise ValueError('任务已删除或不存在：'+task)
+            if task not in self.task_targets:raise ValueError('新任务正在初始化，请稍后重试')
+            return True
+        except (OSError,ValueError) as error:
+            response.success=False;response.message=str(error)
+            return False
+
     def _reset_home(self, _request, response, task, sides=SIDES):
+        if not self._task_available(task,response):return response
         missing = [side for side in sides if self.task_targets[task][side] is None]
         if missing:
             response.success = False
@@ -676,6 +736,7 @@ class InitialPoseReset(Node):
         return response
 
     def _capture_task_home(self, _request, response, task, side):
+        if not self._task_available(task,response):return response
         if not self.lock.acquire(blocking=False):
             response.success = False
             response.message = "Reset or capture is already running."
@@ -766,6 +827,7 @@ class InitialPoseReset(Node):
         return source_times[-1]
 
     def _ready_to_home(self, _request, response, task):
+        if not self._task_available(task,response):return response
         if not self.lock.acquire(blocking=False):
             response.success = False
             response.message = "Reset or trajectory is already running."

@@ -3,7 +3,7 @@ import time
 from dataclasses import replace
 
 import numpy as np
-from operator_tasks import DEFAULT_OPERATOR_TASK, OPERATOR_TASKS
+from operator_tasks import DEFAULT_OPERATOR_TASK, task_label
 from teleop_core.safety import LOWER_LIMITS, UPPER_LIMITS
 
 from .ik import BimanualPinkIK, IKError, classify_step
@@ -199,7 +199,7 @@ class DualFr3HardwareTeleop:
         for mapper in self.mappers.values():
             mapper.reset()
         scope = f"{side} arm" if side else "arms"
-        self._notify(f"Home: moving {scope} to {OPERATOR_TASKS[task]}")
+        self._notify(f"Home: moving {scope} to {task_label(task)}")
 
         def worker() -> None:
             try:
@@ -263,7 +263,7 @@ class DualFr3HardwareTeleop:
         self.capture_side = side
         self.capture_task = task
         self._notify(
-            f"{side}: recording current measured joints as {OPERATOR_TASKS[task]} Home"
+            f"{side}: recording current measured joints as {task_label(task)} Home"
         )
 
         def worker() -> None:
@@ -291,7 +291,7 @@ class DualFr3HardwareTeleop:
             else (False, "no result")
         )
         self._notify(
-            f"{side} {OPERATOR_TASKS.get(task, str(task))} Home capture "
+            f"{side} {task_label(str(task))} Home capture "
             f"{'done' if succeeded else 'FAILED'}: {message}"
         )
 
@@ -315,7 +315,7 @@ class DualFr3HardwareTeleop:
         for mapper in self.mappers.values():
             mapper.reset()
         label = (
-            f"Ready to {OPERATOR_TASKS.get(str(task), str(task))} Home"
+            f"Ready to {task_label(str(task))} Home"
             if action == "trajectory"
             else f"Ready {action}"
         )
@@ -548,7 +548,8 @@ class DualFr3HardwareTeleop:
                     )
                 except (OSError, RuntimeError) as error:
                     self._notify(f"Loop timing diagnostics unavailable: {error}")
-            self.robot.wait_for_state(timeout=self.robot_state_wait_timeout)
+            # No hardware state is an unavailable subsystem, not a GUI lifecycle failure.
+            availability = getattr(self.operator, "set_arm_available", None)
             if self.hands is not None:
                 start_hands = getattr(self.hands, "start", None)
                 if start_hands is not None:
@@ -576,10 +577,15 @@ class DualFr3HardwareTeleop:
                     reason = "robot state missing or stale"
                     if state_missing_since is None:
                         state_missing_since = started_at
-                        self.operator.disable_all(reason)
+                        if availability is None:
+                            self.operator.disable_all(reason)
+                        self.hold_q = None
+                        self.arm_holds = {side: False for side in SIDES}
+                    if availability is not None:
+                        availability(False, "机械臂不可用：状态缺失或过期；请检查连接、Exec 模式及 FCI")
                     missing_for = started_at - state_missing_since
                     self.operator.set_status(
-                        f"FAULT | {reason} for {missing_for:.1f}s"
+                        f"ARMS UNAVAILABLE | {reason} for {missing_for:.1f}s; 检查连接 / Exec / FCI，修复后在 Connection 菜单重连机械臂"
                     )
                     for mapper in self.mappers.values():
                         mapper.reset()
@@ -598,15 +604,12 @@ class DualFr3HardwareTeleop:
                         self.hands.set_active(
                             {side: False for side in SIDES}
                         )
-                    if missing_for >= self.robot_state_wait_timeout:
-                        raise TimeoutError(
-                            "Lost fresh dual-FR3 state for "
-                            f"{missing_for:.1f}s"
-                        )
                     if timing is not None:
                         timing.mark("loop_wait")
                     time.sleep(self.dt)
                     continue
+                if availability is not None:
+                    availability(True)
                 state_missing_since = None
                 self._service_preset_solver(q)
                 if self.hold_q is None:

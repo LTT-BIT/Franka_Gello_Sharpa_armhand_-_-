@@ -567,3 +567,111 @@ def test_sidebar_defaults_restore_local_remote_and_all_switches(tmp_path,monkeyp
         assert not Path(local).exists() and not Path(remote).exists()
     finally:
         second.close();app.processEvents()
+
+
+def test_offline_arms_disable_motion_and_task_management_preserves_layout(tmp_path,monkeypatch):
+    from PySide6.QtWidgets import QInputDialog,QMessageBox
+    from operator_tasks import get_operator_tasks
+    from unittest.mock import Mock
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG',raising=False)
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path/'qt'))
+    window=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    try:
+        window._apply_status(dict(arm_available=False,status_line='ARMS UNAVAILABLE',
+            active=dict(left=False,right=False),arm_hold=dict(left=False,right=False)))
+        assert all(not button.isEnabled() for button in window.arm_engage_buttons.values())
+        assert not window.home_both_button.isEnabled() and not window.capture_ready_button.isEnabled()
+        assert window.task_selector.isEnabled()
+        assert 'unavailable' in window.arm_engage_buttons['left'].text()
+        monkeypatch.setattr(QInputDialog,'getText',lambda *a:('离线新任务',True))
+        window._task_action_selected(window.task_selector.findData('__add_task__'))
+        _wait_task_edit(window,app)
+        selected=window._selected_task()
+        assert get_operator_tasks()[selected]=='离线新任务'
+        window._apply_status(dict(arm_available=True,active={},arm_hold={}))
+        window._send=Mock()
+        window._record_current_home('left')
+        assert window._send.call_args.args==('capture_home',dict(side='left',task=selected))
+        # Neither arm-state refresh nor returning online changes the selected task.
+        window._apply_status(dict(arm_available=True,active={},arm_hold={}))
+        assert window._selected_task()==selected and window.home_both_button.isEnabled()
+        window._shortcut_home('both')
+        assert window._send.call_args.args==('home_arm',dict(side='both',task=selected))
+        window._delete_task_confirmed(selected,QMessageBox.Yes)
+        _wait_task_edit(window,app)
+        assert selected not in get_operator_tasks()
+        assert window._selected_task() in get_operator_tasks()
+    finally:window.close();app.processEvents()
+
+
+def test_gui_delete_removes_pose_and_trajectory_using_yaml_helper(tmp_path,monkeypatch):
+    from operator_tasks import add_operator_task,task_storage_paths,get_operator_tasks
+    from PySide6.QtWidgets import QMessageBox
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG',raising=False)
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path/'qt'))
+    selected=add_operator_task('永久清理测试')
+    poses,trajectories=task_storage_paths()
+    # JSON is also valid YAML; the GUI Python need not import PyYAML.
+    poses.write_text(json.dumps(dict(version=1,tasks={selected:dict(home=dict(left=[1]*7,right=[2]*7)),
+        'assembly':dict(home=dict(left=[3]*7,right=[4]*7))},ready='shared-ready')))
+    trajectories.mkdir(parents=True)
+    target=trajectories/(selected+'.yaml');target.write_text('selected trajectory')
+    other=trajectories/'assembly.yaml';other.write_text('keep')
+    window=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    try:
+        window._reload_task_selector(selected)
+        window._delete_task_confirmed(selected,QMessageBox.Yes)
+        _wait_task_edit(window,app)
+        assert selected not in get_operator_tasks()
+        assert selected not in poses.read_text()
+        assert 'shared-ready' in poses.read_text() and 'assembly' in poses.read_text()
+        assert not target.exists() and other.read_text()=='keep'
+        assert '永久删除' in window.feedback.toPlainText()
+    finally:window.close();app.processEvents()
+
+
+def _wait_task_edit(window,app):
+    from PySide6.QtTest import QTest
+    deadline=time.monotonic()+8
+    while window.task_edit_pending and time.monotonic()<deadline:
+        app.processEvents();QTest.qWait(10)
+    assert not window.task_edit_pending, window.feedback.toPlainText()
+
+
+def test_task_cleanup_does_not_block_gui_timers(tmp_path,monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtCore import QTimer
+    from PySide6.QtTest import QTest
+    from operator_tasks import add_operator_task,delete_operator_task,get_operator_tasks
+    import apps.operator_gui.operator_gui as module
+    app=QApplication.instance() or QApplication([])
+    monkeypatch.delenv('TELEOP_FULL_CONFIG',raising=False)
+    QSettings.setPath(QSettings.NativeFormat,QSettings.UserScope,str(tmp_path/'qt'))
+    selected=add_operator_task('后台清理')
+    release=threading.Event();ticks=[]
+    def slow_delete(task):
+        assert release.wait(5)
+        delete_operator_task(task)
+    monkeypatch.setattr(module,'delete_operator_task',slow_delete)
+    window=OperatorWindow('127.0.0.1',port(),collection_port=port())
+    try:
+        window._reload_task_selector(selected)
+        window._delete_task_confirmed(selected,QMessageBox.Yes)
+        assert window.task_edit_pending and not window.task_selector.isEnabled()
+        QTimer.singleShot(5,lambda:ticks.append('GUI timer alive'))
+        QTest.qWait(30);app.processEvents()
+        assert ticks==['GUI timer alive']
+        window._set_connection_state('connected')
+        assert not window.home_both_button.isEnabled()
+        assert window.disengage_all_button.isEnabled()
+        assert all(button.isEnabled() for button in window.hand_engage_buttons.values())
+        window._apply_status(dict(arm_available=True,active={},arm_hold={}))
+        assert not window.home_both_button.isEnabled()
+        release.set();_wait_task_edit(window,app)
+        assert selected not in get_operator_tasks() and window.task_selector.isEnabled()
+    finally:
+        release.set()
+        if window.task_edit_pending:_wait_task_edit(window,app)
+        window.close();app.processEvents()

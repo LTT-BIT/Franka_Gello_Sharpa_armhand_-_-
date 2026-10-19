@@ -253,3 +253,29 @@ def test_background_home_connection_cannot_replace_operator_frontend():
         assert server.dispatch('episode_home', dict(id='episode-1:0', task='assembly'))['state'] == 'queued'
     finally:
         server.server_close()
+
+
+def test_offline_arm_commands_rejected_but_hand_authority_survives():
+    console=OperatorConsole()
+    server=OperatorControlServer(('127.0.0.1',0),console)
+    try:
+        console.set_active('left',True,target='arm')
+        console.set_active('right',True,target='hand')
+        console.request('reset','assembly')
+        console.set_arm_available(False,'FCI unavailable')
+        assert not any(console.snapshot()['arm_authorized'].values())
+        assert console.poll_hands()['right']
+        assert not console.take_requests()['reset']
+        for command,arguments in [('engage_arm',dict(side='left')),
+            ('hold_arm',dict(side='left',enabled=True)),('home_arm',{}),('capture_home',dict(side='left')),
+            ('capture_ready',{}),('move_ready',{}),('ready_to_home',{}),('run_preset',dict(key='q'))]:
+            with pytest.raises(ValueError,match='FCI unavailable'):
+                server.dispatch(command,arguments)
+        server.dispatch('engage_hand',dict(side='left'))
+        console.set_arm_available(True)
+        assert not any(console.poll().values())
+        assert not any(console.poll_holds().values())
+        assert all(console.poll_hands().values())
+        server.dispatch('engage_arm',dict(side='left'))
+        assert console.poll()['left']
+    finally:server.server_close()

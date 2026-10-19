@@ -12,6 +12,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import threading
 
 ROOT=Path(__file__).resolve().parents[1]
 SERVICES={'franka-control','teleop-control','moveit-ik','preset-ik','gello-bridge','hand-control'}
@@ -127,16 +128,21 @@ def alive(pid,identity):
     except (OSError,IndexError):return False
 
 
-def notify_gui_session_exit(token):
-    """Explicit window close ends its owned full session, independently of TCP."""
+def notify_full_session(token, command):
+    """Send an authenticated lifecycle request to this GUI's launcher."""
     path=os.environ.get('TELEOP_FULL_EXIT_SOCKET')
     if not path:return False
     try:
         with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as sender:
             sender.settimeout(.1)
-            sender.sendto(json.dumps({'command':'gui_closed','token':token}).encode(),path)
+            sender.sendto(json.dumps({'command':command,'token':token}).encode(),path)
         return True
     except OSError:return False
+
+
+def notify_gui_session_exit(token):
+    """Explicit window close ends its owned full session, independently of TCP."""
+    return notify_full_session(token, "gui_closed")
 
 
 class FullLauncher:
@@ -145,6 +151,7 @@ class FullLauncher:
         self.children=[];self.stopping=False;self.owned={};self.subreaper=None
         self.exit_socket=None;self.exit_path=self.path.with_name('launcher-exit.sock')
         self.episode_home_bridge=None
+        self.arm_reconnect_thread=None
         self.owns_docker=(self.root/'docker/compose.yaml').is_file()
 
     def start(self):
@@ -184,7 +191,33 @@ class FullLauncher:
             except (ValueError,UnicodeDecodeError):continue
             if (isinstance(request,dict) and request.get('command')=='gui_closed'
                     and request.get('token')==self.config['token']):return True
+            if (isinstance(request,dict) and request.get('command')=='reconnect_arms'
+                    and request.get('token')==self.config['token'] and self.owns_docker):
+                if self.arm_reconnect_thread is None or not self.arm_reconnect_thread.is_alive():
+                    self.arm_reconnect_thread=threading.Thread(target=self.reconnect_arms,daemon=True)
+                    self.arm_reconnect_thread.start()
         return False
+
+    def reconnect_arms(self):
+        """Explicit retry only. Never stop a running controller or restart hands."""
+        try:
+            port=deployment_port(self.root,'TELEOP_CONTROL_PORT',5590)
+            with socket.create_connection(('127.0.0.1',port),timeout=1) as connection:
+                connection.sendall(b'{"id":0,"command":"status"}\n')
+                with connection.makefile('rb') as stream:
+                    response=json.loads(stream.readline(65536))
+            status=response.get('result',{})
+            if not response.get('ok') or status.get('arm_available',True):
+                print('Arm reconnect refused: arm backend unavailable or arms already ready',flush=True)
+                return
+            if self.stopping:return
+            # up only starts an exited hardware service. An active controller is
+            # never torn down; GUI requests cannot restart a moving robot.
+            subprocess.run(['docker','compose','up','-d','--no-deps','franka-control'],
+                cwd=self.root/'docker',check=True,timeout=30)
+            print('Arm hardware connection retried; fresh state and manual engagement are still required',flush=True)
+        except (OSError,ValueError,subprocess.SubprocessError) as error:
+            print('Arm reconnect failed: '+str(error),flush=True)
 
     def remember(self):
         for child in self.children:self.owned.update(descendants(child.pid))
@@ -243,6 +276,8 @@ class FullLauncher:
         if self.exit_socket is not None:
             self.exit_socket.close();self.exit_path.unlink(missing_ok=True);self.exit_socket=None
         self.remember();self.revoke();errors=[]
+        if self.arm_reconnect_thread is not None:
+            self.arm_reconnect_thread.join(timeout=32)
         if self.episode_home_bridge is not None and self.episode_home_bridge.thread is not None:
             self.episode_home_bridge.thread.join(timeout=3)
 

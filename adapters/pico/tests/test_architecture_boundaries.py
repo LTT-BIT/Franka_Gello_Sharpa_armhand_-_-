@@ -365,7 +365,7 @@ def test_hardware_coordinator_runs_with_a_device_agnostic_arm_source(monkeypatch
     assert closed == {"source": True, "robot": True}
 
 
-def test_hardware_coordinator_reports_and_exits_after_state_loss(monkeypatch):
+def test_hardware_coordinator_keeps_waiting_after_state_loss(monkeypatch):
     statuses = []
     disabled = []
     closed = {"source": False, "robot": False}
@@ -396,6 +396,8 @@ def test_hardware_coordinator_reports_and_exits_after_state_loss(monkeypatch):
 
         def send_command(self, _q, active_sides):
             assert active_sides == ()
+            if len(statuses)>20:
+                raise KeyboardInterrupt
 
         def close(self):
             closed["robot"] = True
@@ -421,10 +423,10 @@ def test_hardware_coordinator_reports_and_exits_after_state_loss(monkeypatch):
         operator=Operator(),
     )
 
-    with pytest.raises(TimeoutError, match="Lost fresh dual-FR3 state"):
+    with pytest.raises(KeyboardInterrupt):
         teleop.run()
 
     assert disabled == ["robot state missing or stale"]
     assert statuses
-    assert statuses[-1].startswith("FAULT | robot state missing or stale")
+    assert statuses[-1].startswith("ARMS UNAVAILABLE | robot state missing or stale")
     assert closed == {"source": True, "robot": True}

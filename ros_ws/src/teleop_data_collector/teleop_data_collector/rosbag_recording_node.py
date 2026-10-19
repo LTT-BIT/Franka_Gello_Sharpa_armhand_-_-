@@ -423,10 +423,11 @@ def main(args=None):
         postflight=node.postflight,
     )
     live = None
-    if node.config.continuity_enabled:
+    if node.config.continuity_enabled or node.config.rgb_preflight_enabled:
         from .live_continuity import LiveContinuity
-        live = LiveContinuity(node)
-        node.continuity_monitor = live.monitor
+        live = LiveContinuity(node, recording_active=lambda: recorder.active)
+        if node.config.continuity_enabled:
+            node.continuity_monitor = live.monitor
         node.collection_readiness = live.readiness
     controller = CollectorController(node, recorder)
     control_server = CollectorControlServer(

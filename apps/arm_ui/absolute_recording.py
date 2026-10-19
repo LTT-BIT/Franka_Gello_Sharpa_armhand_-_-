@@ -12,7 +12,7 @@ from typing import Iterable, Mapping, Sequence
 
 import yaml
 
-from operator_tasks import OPERATOR_TASKS, require_operator_task
+from operator_tasks import require_operator_task, task_label, task_registry_lock
 
 SIDES = ("left", "right")
 JOINT_COUNT = 7
@@ -80,7 +80,7 @@ def build_absolute_trajectory(
         raise ValueError("双臂绝对轨迹的每侧必须包含7个关节名")
     return AbsoluteTrajectory(
         task=selected,
-        label=OPERATOR_TASKS[selected],
+        label=task_label(selected),
         created_at=datetime.now(timezone.utc).isoformat(),
         joint_names=names,
         samples=normalized,
@@ -95,6 +95,12 @@ class AbsoluteTrajectoryStore:
         return self.root / f"{require_operator_task(task)}.yaml"
 
     def save(self, trajectory: AbsoluteTrajectory, *, overwrite: bool = True) -> Path:
+        with task_registry_lock():
+            # A recording finalized after task deletion cannot recreate its YAML.
+            require_operator_task(trajectory.task)
+            return self._save(trajectory,overwrite=overwrite)
+
+    def _save(self, trajectory: AbsoluteTrajectory, *, overwrite: bool = True) -> Path:
         path = self.path(trajectory.task)
         if path.exists() and not overwrite:
             raise ValueError(f"轨迹已存在: {trajectory.label}")

@@ -43,6 +43,8 @@ class OperatorConsole:
         # motion and repeatedly sends the target captured by the coordinator.
         self.arm_hold = {side: False for side in SIDES}
         self._arm_hold_resume = {side: False for side in SIDES}
+        self.arm_available = True
+        self.arm_unavailable_reason = ""
         self.home_locked = False
         self.episode_home: dict = {}
         self.hand_active = {side: False for side in SIDES}
@@ -100,6 +102,8 @@ class OperatorConsole:
         if target not in {"arm", "hand", "both"}:
             raise ValueError(f"unknown activation target: {target}")
         with self._lock:
+            if not self.arm_available and engaged and target in {"arm", "both"}:
+                raise ValueError(self.arm_unavailable_reason or "机械臂不可用")
             if self.home_locked and engaged and target in {"arm", "both"}:
                 raise ValueError("Home not confirmed complete; arm following is locked")
             if target in {"arm", "both"}:
@@ -117,6 +121,8 @@ class OperatorConsole:
         if not isinstance(held, bool):
             raise ValueError("enabled must be a boolean")
         with self._lock:
+            if not self.arm_available:
+                raise ValueError(self.arm_unavailable_reason or "机械臂不可用")
             if self.home_locked and not held:
                 raise ValueError("Home not confirmed complete; arm Hold is locked")
             if held:
@@ -129,6 +135,21 @@ class OperatorConsole:
                 self.active[side] = self._arm_hold_resume[side]
                 self._arm_hold_resume[side] = False
         self.show(f"{side} arm: {'holding target' if held else 'hold released'}")
+
+    def set_arm_available(self, available: bool, reason: str = "") -> None:
+        with self._lock:
+            self.arm_available = available
+            self.arm_unavailable_reason = reason
+            if not available:
+                for side in SIDES:
+                    self.active[side] = False
+                    self.arm_hold[side] = False
+                    self._arm_hold_resume[side] = False
+                for name in self.requests:
+                    if not name.startswith("open_"):
+                        self.requests[name] = False
+                if self.episode_home.get("state") in {"queued", "running"}:
+                    self.episode_home.update(state="failed", message=reason)
 
     def begin_arm_home(self) -> None:
         """Keep existing arm permits behind Hold while Home owns the bus."""
@@ -154,6 +175,8 @@ class OperatorConsole:
             raise ValueError("invalid episode Home id")
         task = require_operator_task(arguments.get("task", DEFAULT_OPERATOR_TASK))
         with self._lock:
+            if not self.arm_available:
+                raise ValueError(self.arm_unavailable_reason or "机械臂不可用")
             if self.episode_home.get("id") == job_id:
                 return dict(self.episode_home)
             if self.episode_home.get("state") in {"queued", "running"}:
@@ -215,6 +238,8 @@ class OperatorConsole:
         with self._lock:
             return {
                 "status_line": self._status_line,
+                "arm_available": self.arm_available,
+                "arm_unavailable_reason": self.arm_unavailable_reason,
                 "feedback": list(self._feedback),
                 "active": dict(self.active),
                 "arm_hold": dict(self.arm_hold),
@@ -339,6 +364,11 @@ class OperatorControlServer(socketserver.ThreadingTCPServer):
             raise ValueError("side must be left, right, or both")
 
     def dispatch(self, command: str, arguments: dict):
+        if command in {"home_arm", "capture_home", "capture_ready", "move_ready",
+                       "ready_to_home", "run_preset", "episode_home"}:
+            snapshot=self.snapshot()
+            if not snapshot.get("arm_available", True):
+                raise ValueError(snapshot.get("arm_unavailable_reason") or "机械臂不可用")
         commands = {
             "status": self.snapshot,
             "engage": lambda: self.keyboard.set_active(
