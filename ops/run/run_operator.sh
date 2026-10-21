@@ -89,9 +89,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-occupied="$(lsof -t -iTCP:"$CONTROL_PORT" -sTCP:LISTEN 2>/dev/null || true)"
+# Query sockets directly: lsof can block while inspecting an unrelated FUSE mount.
+if ! occupied="$(timeout 5 ss -H -ltnp "sport = :$CONTROL_PORT")"; then
+  echo "Cannot check control port $CONTROL_PORT; socket query failed or timed out." >&2
+  exit 1
+fi
 if [[ -n "$occupied" ]]; then
-  echo "Control port $CONTROL_PORT is already used by PID(s): $occupied" >&2
+  echo "Control port $CONTROL_PORT already has a listener: $occupied" >&2
   echo "Stop the previous operator before starting another one." >&2
   exit 1
 fi

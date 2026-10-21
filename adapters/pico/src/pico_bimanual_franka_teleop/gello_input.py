@@ -169,14 +169,19 @@ class DynamixelJointReader:
 
         try:
             occupied = subprocess.run(
-                ["lsof", "-t", port],
+                ["fuser", port],
                 check=False,
                 capture_output=True,
                 text=True,
+                timeout=5.0,
             )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"GELLO port ownership check timed out for {port}"
+            ) from error
         except OSError as error:
             raise RuntimeError(
-                "lsof is required for safe GELLO port ownership"
+                "fuser is required for safe GELLO port ownership"
             ) from error
         if occupied.returncode == 0 and occupied.stdout.strip():
             pids = ", ".join(occupied.stdout.split())

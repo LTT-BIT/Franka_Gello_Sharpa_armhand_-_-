@@ -1,4 +1,5 @@
 import time
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -712,3 +713,18 @@ def test_hardware_coordinator_anchors_joint_input_to_measured_state(monkeypatch)
     np.testing.assert_array_equal(sent[0][0], measured)
     assert sent[0][1] == ("left", "right")
     assert closed == {"source": True, "robot": True}
+
+
+def test_hardware_reader_fails_closed_when_ownership_check_times_out(monkeypatch):
+    driver_module = types.ModuleType("gello.dynamixel.driver")
+    driver_module.DynamixelDriver = lambda *a, **kw: pytest.fail("driver must not open on timeout")
+    monkeypatch.setitem(sys.modules, "gello.dynamixel.driver", driver_module)
+
+    def timed_out(command, **kwargs):
+        assert command == ["fuser", "/dev/test-gello"]
+        assert kwargs["timeout"] == 5.0
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr("pico_bimanual_franka_teleop.gello_input.subprocess.run", timed_out)
+    with pytest.raises(RuntimeError, match="ownership check timed out"):
+        DynamixelJointReader("/dev/test-gello", 57600, tuple(range(1, 8)))
