@@ -1,5 +1,5 @@
 # common params
-device_access_mode: "mr"  # Monitor/read-only access - allows multiple processes to access the camera
+device_access_mode: "ca"  # Control access for the cam0 recording owner; allows read-only monitors
 enable_d2c_viewer: false
 enable_point_cloud: false
 enable_colored_point_cloud: false

@@ -32,12 +32,24 @@ def test_build_and_runtime_each_require_explicit_sdk_license_acceptance():
     assert "!= \"YES\"" in launch
 
 
-def test_only_head_camera_enumerates_network_devices():
-    launch = (
-        REPO_ROOT
-        / "ros_ws/src/teleop_camera_bringup/launch/triple_camera.launch.py"
-    ).read_text(encoding="utf-8")
-    assert '"enumerate_net_device": "true" if name == "cam0" else "false"' in launch
+def test_camera_direct_ip_and_legacy_discovery_arguments():
+    import importlib.util
+    import pytest
+    path = REPO_ROOT / "ros_ws/src/teleop_camera_bringup/launch/triple_camera.launch.py"
+    spec = importlib.util.spec_from_file_location("camera_connections", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    connect = module._connection_arguments
+    assert connect("cam0", {}) == {"enumerate_net_device": "true"}
+    assert connect("cam1", {}) == {"enumerate_net_device": "false"}
+    assert connect("cam0", {"net_device_ip": "192.168.1.123"}) == {
+        "enumerate_net_device": "false", "net_device_ip": "192.168.1.123", "net_device_port": "8090"}
+    for entry in [{"net_device_ip": "bad"}, {"net_device_ip": "192.168.1.123", "net_device_port": 0},
+                  {"net_device_port": 8090}]:
+        with pytest.raises(ValueError):
+            connect("cam0", entry)
+    with pytest.raises(ValueError):
+        connect("cam1", {"net_device_ip": "192.168.1.123"})
 
 
 def test_original_license_notice_and_sdk_eula_are_retained():
@@ -93,7 +105,7 @@ def test_cam1_global_repair_is_isolated_from_other_camera_profiles():
     original = yaml.safe_load((root / "camera_secondary_params.yaml").read_text())
     repaired = yaml.safe_load((root / "camera_cam1_global_params.yaml").read_text())
     assert repaired["time_domain"] == "global"
-    assert repaired["enable_sync_host_time"] is False
+    assert repaired["enable_sync_host_time"] is True
     assert repaired["enable_frame_timestamp_csv"] is True
     assert repaired["color_format"] == "YUYV"
     assert original["color_format"] == "ANY"
@@ -119,7 +131,7 @@ def test_timestamp_diagnostics_are_unique_persistent_and_do_not_modify_source(tm
     second = module._prepare_camera_parameters(source, "cam1", tmp_path)
     assert first != second
     params = yaml.safe_load(first.read_text())
-    assert params["enable_sync_host_time"] is False
+    assert params["enable_sync_host_time"] == yaml.safe_load(before)["enable_sync_host_time"]
     assert params["time_domain"] == "global"
     assert str(tmp_path) in params["frame_timestamp_csv_file"]
     assert params["frame_timestamp_csv_file"] != yaml.safe_load(second.read_text())["frame_timestamp_csv_file"]

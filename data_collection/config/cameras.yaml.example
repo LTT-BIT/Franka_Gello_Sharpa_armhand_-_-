@@ -3,6 +3,9 @@ camera_bringup:
   # start_recording.sh refuses REPLACE_* values.
   # Copy to cameras.yaml locally; do not commit real serial numbers.
   cam0:
+    # Optional: direct connection to the deployed camera, bypassing discovery.
+    # net_device_ip: 192.168.1.123
+    # net_device_port: 8090
     serial_number: REPLACE_CAM0_SERIAL
     semantic: REPLACE_CAM0_SEMANTIC
     config_file: camera_primary_params.yaml

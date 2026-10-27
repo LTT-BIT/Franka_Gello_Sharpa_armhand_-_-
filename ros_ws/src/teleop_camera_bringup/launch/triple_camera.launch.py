@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,21 @@ from launch.substitutions import LaunchConfiguration
 
 
 LICENSE_ENVIRONMENT_VARIABLE = "ORBBEC_SDK_LICENSE_ACCEPTED"
+
+
+def _connection_arguments(name: str, entry: dict) -> dict[str, str]:
+    address = str(entry.get("net_device_ip", "")).strip()
+    if not address:
+        if "net_device_port" in entry:
+            raise ValueError(f"{name}: net_device_port requires net_device_ip")
+        return {"enumerate_net_device": "true" if name == "cam0" else "false"}
+    if name != "cam0":
+        raise ValueError("Only cam0 supports network connection in this deployment")
+    ipaddress.IPv4Address(address)
+    port = int(entry.get("net_device_port", 8090))
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name}: invalid network device port")
+    return {"enumerate_net_device": "false", "net_device_ip": address, "net_device_port": str(port)}
 
 
 def _prepare_camera_parameters(parameter_file: Path, camera_name: str, diagnostic_dir: Path) -> Path:
@@ -88,7 +104,7 @@ def _camera_actions(context):
             launch_arguments={
                 "camera_name": name,
                 "serial_number": str(entry["serial_number"]),
-                "enumerate_net_device": "true" if name == "cam0" else "false",
+                **_connection_arguments(name, entry),
                 "sync_mode": "standalone",
                 "config_file_path": str(parameter_file),
                 "log_level": str(cameras.get("log_level", "none")),
